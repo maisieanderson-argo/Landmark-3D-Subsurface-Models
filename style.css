@@ -1,0 +1,46 @@
+body {
+    margin: 0;
+    overflow: hidden;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #111;
+    color: white;
+}
+
+#canvas-container {
+    width: 100vw;
+    height: 100vh;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+}
+
+#ui-container {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    z-index: 2;
+    pointer-events: none;
+}
+
+h1 {
+    font-size: 1.5rem;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+    margin: 0;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px 20px;
+    border-radius: 8px;
+    backdrop-filter: blur(5px);
+}
+
+#loading {
+    margin-top: 10px;
+    font-style: italic;
+    color: #aaa;
+    display: none;
+}
+
+/* dat.gui custom positioning */
+.dg.ac {
+    z-index: 3 !important;
+}
