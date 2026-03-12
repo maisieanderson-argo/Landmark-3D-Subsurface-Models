@@ -40,7 +40,9 @@ h1 {
     display: none;
 }
 
-/* dat.gui custom positioning */
-.dg.ac {
-    z-index: 3 !important;
+
+/* Dataset selector must receive pointer events even though the parent ui-container doesn't */
+#dataset-selector {
+    pointer-events: auto;
 }
+

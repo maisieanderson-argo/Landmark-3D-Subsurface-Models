@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -15,21 +14,12 @@
         }
     </script>
 </head>
-
 <body>
     <div id="canvas-container"></div>
     <div id="ui-container">
         <h1>Geological Subsurface Map</h1>
-        <div id="dataset-selector" style="margin-bottom: 10px;">
-            <label for="dataset-select" style="color: white; font-size: 13px; margin-right: 8px;">Field:</label>
-            <select id="dataset-select" style="background: #222; color: white; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 13px; cursor: pointer;">
-                <option value="volve">Volve Field</option>
-                <option value="norne">Norne Field</option>
-            </select>
-        </div>
         <div id="loading">Generating model...</div>
     </div>
-    <script type="module" src="script_volve.js"></script>
+    <script type="module" src="./script_wells.js"></script>
 </body>
-
 </html>

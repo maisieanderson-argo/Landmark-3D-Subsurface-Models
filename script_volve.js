@@ -58,7 +58,7 @@ scene.add(hemiLight);
 let mainLight;
 
 const fillLight = new THREE.DirectionalLight(0xffffff, 1.15);
-fillLight.position.set(-5000, 5000, -5000); 
+fillLight.position.set(-5000, 5000, -5000);
 scene.add(fillLight);
 
 const bottomLight = new THREE.DirectionalLight(0xffffff, 0.5);
@@ -105,7 +105,7 @@ const ColormapRegistry = {
         { t: 0.0, c: '#00204d' }, { t: 0.5, c: '#7c7b78' }, { t: 1.0, c: '#ffea46' }
     ],
     'Turbo': [
-        { t: 0.0, c: '#30123b' }, { t: 0.2, c: '#4686fb' }, { t: 0.4, c: '#18d5cc' }, 
+        { t: 0.0, c: '#30123b' }, { t: 0.2, c: '#4686fb' }, { t: 0.4, c: '#18d5cc' },
         { t: 0.6, c: '#a4fc3b' }, { t: 0.8, c: '#e98a1c' }, { t: 1.0, c: '#7a0403' }
     ],
     'Warm': [
@@ -113,6 +113,79 @@ const ColormapRegistry = {
     ],
     'Cool': [
         { t: 0.0, c: '#4c6edb' }, { t: 0.5, c: '#23abd8' }, { t: 1.0, c: '#e460de' }
+    ],
+    // Colorcet Perceptually Uniform Colormaps
+    'CET-L01 (Gray)': [
+        { t: 0.0, c: '#000000' }, { t: 0.5, c: '#808080' }, { t: 1.0, c: '#ffffff' }
+    ],
+    'CET-L02 (Blue-White)': [
+        { t: 0.0, c: '#1e1e4a' }, { t: 0.25, c: '#3b5998' }, { t: 0.5, c: '#6b9dc7' }, { t: 0.75, c: '#a8d0e6' }, { t: 1.0, c: '#ffffff' }
+    ],
+    'CET-L03 (Blue-Yellow)': [
+        { t: 0.0, c: '#352a87' }, { t: 0.25, c: '#0f6faa' }, { t: 0.5, c: '#38b99e' }, { t: 0.75, c: '#a5d96a' }, { t: 1.0, c: '#f7feac' }
+    ],
+    'CET-L04 (Blue-White-Red)': [
+        { t: 0.0, c: '#2166ac' }, { t: 0.25, c: '#67a9cf' }, { t: 0.5, c: '#f7f7f7' }, { t: 0.75, c: '#ef8a62' }, { t: 1.0, c: '#b2182b' }
+    ],
+    'CET-L06 (Blue-Black-Red)': [
+        { t: 0.0, c: '#0571b0' }, { t: 0.25, c: '#2a4858' }, { t: 0.5, c: '#1a1a1a' }, { t: 0.75, c: '#5c2a2a' }, { t: 1.0, c: '#ca0020' }
+    ],
+    'CET-L07 (Blue-Magenta-Yellow)': [
+        { t: 0.0, c: '#1e1e78' }, { t: 0.25, c: '#7b2e8e' }, { t: 0.5, c: '#c44e52' }, { t: 0.75, c: '#e8a838' }, { t: 1.0, c: '#f0f921' }
+    ],
+    'CET-L08 (Green-White-Purple)': [
+        { t: 0.0, c: '#1b7837' }, { t: 0.25, c: '#7fbf7b' }, { t: 0.5, c: '#f7f7f7' }, { t: 0.75, c: '#af8dc3' }, { t: 1.0, c: '#762a83' }
+    ],
+    'CET-L09 (Green-White-Brown)': [
+        { t: 0.0, c: '#01665e' }, { t: 0.25, c: '#5ab4ac' }, { t: 0.5, c: '#f5f5f5' }, { t: 0.75, c: '#d8b365' }, { t: 1.0, c: '#8c510a' }
+    ],
+    'CET-L16 (Rainbow)': [
+        { t: 0.0, c: '#30123b' }, { t: 0.17, c: '#4662d7' }, { t: 0.33, c: '#36aac8' },
+        { t: 0.5, c: '#43e86b' }, { t: 0.67, c: '#c8e020' }, { t: 0.83, c: '#f57d15' }, { t: 1.0, c: '#7a0403' }
+    ],
+    'CET-L17 (Cyclic-Gray)': [
+        { t: 0.0, c: '#2a2a2a' }, { t: 0.25, c: '#808080' }, { t: 0.5, c: '#d4d4d4' }, { t: 0.75, c: '#808080' }, { t: 1.0, c: '#2a2a2a' }
+    ],
+    'CET-L18 (Cyclic-Magenta-Yellow)': [
+        { t: 0.0, c: '#bf77bf' }, { t: 0.25, c: '#e8e857' }, { t: 0.5, c: '#57e8e8' }, { t: 0.75, c: '#e8e857' }, { t: 1.0, c: '#bf77bf' }
+    ],
+    'CET-L19 (Cyclic-Red-Blue)': [
+        { t: 0.0, c: '#d73027' }, { t: 0.25, c: '#f7f7f7' }, { t: 0.5, c: '#4575b4' }, { t: 0.75, c: '#f7f7f7' }, { t: 1.0, c: '#d73027' }
+    ],
+    'CET-D01 (Blue-White-Red Diverging)': [
+        { t: 0.0, c: '#3b4cc0' }, { t: 0.25, c: '#8abbdc' }, { t: 0.5, c: '#f7f7f7' }, { t: 0.75, c: '#f0a582' }, { t: 1.0, c: '#b40426' }
+    ],
+    'CET-D02 (Cyan-White-Magenta)': [
+        { t: 0.0, c: '#008080' }, { t: 0.25, c: '#80c0c0' }, { t: 0.5, c: '#ffffff' }, { t: 0.75, c: '#c080c0' }, { t: 1.0, c: '#800080' }
+    ],
+    'CET-D03 (Green-White-Red)': [
+        { t: 0.0, c: '#1a9641' }, { t: 0.25, c: '#a6d96a' }, { t: 0.5, c: '#ffffbf' }, { t: 0.75, c: '#fdae61' }, { t: 1.0, c: '#d7191c' }
+    ],
+    'CET-D04 (Blue-Black-Yellow)': [
+        { t: 0.0, c: '#2c7bb6' }, { t: 0.25, c: '#1a4a6e' }, { t: 0.5, c: '#1a1a1a' }, { t: 0.75, c: '#6e5a1a' }, { t: 1.0, c: '#d7a02c' }
+    ],
+    'CET-I1 (Isoluminant Blue-Green)': [
+        { t: 0.0, c: '#5773cc' }, { t: 0.5, c: '#7a9a9a' }, { t: 1.0, c: '#9ac257' }
+    ],
+    'CET-I2 (Isoluminant Magenta-Green)': [
+        { t: 0.0, c: '#cc5599' }, { t: 0.5, c: '#999999' }, { t: 1.0, c: '#55cc77' }
+    ],
+    'CET-I3 (Isoluminant Red-Blue)': [
+        { t: 0.0, c: '#cc6666' }, { t: 0.5, c: '#9a7a9a' }, { t: 1.0, c: '#6666cc' }
+    ],
+    'CET-R1 (Rainbow-Bright)': [
+        { t: 0.0, c: '#e41a1c' }, { t: 0.2, c: '#ff7f00' }, { t: 0.4, c: '#ffff33' },
+        { t: 0.6, c: '#4daf4a' }, { t: 0.8, c: '#377eb8' }, { t: 1.0, c: '#984ea3' }
+    ],
+    'CET-R2 (Rainbow-Dark)': [
+        { t: 0.0, c: '#7f0000' }, { t: 0.2, c: '#b35900' }, { t: 0.4, c: '#b3b300' },
+        { t: 0.6, c: '#267326' }, { t: 0.8, c: '#264d73' }, { t: 1.0, c: '#4d264d' }
+    ],
+    'CET-CBC1 (Colorblind-Safe Blue-Orange)': [
+        { t: 0.0, c: '#0072b2' }, { t: 0.5, c: '#f0e442' }, { t: 1.0, c: '#d55e00' }
+    ],
+    'CET-CBC2 (Colorblind-Safe Blue-Red)': [
+        { t: 0.0, c: '#0072b2' }, { t: 0.5, c: '#f7f7f7' }, { t: 1.0, c: '#cc79a7' }
     ]
 };
 
@@ -120,19 +193,19 @@ function getColormapColor(name, t) {
     const stops = ColormapRegistry[name] || ColormapRegistry['Viridis'];
     // Clamp t
     t = Math.max(0, Math.min(1, t));
-    
+
     // Find stops
     for (let i = 0; i < stops.length - 1; i++) {
-        if (t >= stops[i].t && t <= stops[i+1].t) {
+        if (t >= stops[i].t && t <= stops[i + 1].t) {
             const t0 = stops[i].t;
-            const t1 = stops[i+1].t;
+            const t1 = stops[i + 1].t;
             const localT = (t - t0) / (t1 - t0);
             const c1 = new THREE.Color(stops[i].c);
-            const c2 = new THREE.Color(stops[i+1].c);
+            const c2 = new THREE.Color(stops[i + 1].c);
             return c1.lerp(c2, localT);
         }
     }
-    return new THREE.Color(stops[stops.length-1].c);
+    return new THREE.Color(stops[stops.length - 1].c);
 }
 
 // Data Parsing
@@ -141,7 +214,7 @@ function parseCSV(text) {
     const lines = text.split('\n');
     console.log("Line count:", lines.length);
     const data = {}; // Map "IL_XL" -> {x, y, z}
-    
+
     let minIL = Infinity, maxIL = -Infinity;
     let minXL = Infinity, maxXL = -Infinity;
     let parsedCount = 0;
@@ -150,37 +223,76 @@ function parseCSV(text) {
     for (let i = 1; i < lines.length; i++) {
         let line = lines[i].trim();
         if (!line) continue;
-        
+
         const parts = line.split(',');
-        
+
         if (parts.length < 5) {
-             continue;
+            continue;
         }
-        
-        const il = parseFloat(parts[0]); 
+
+        const il = parseFloat(parts[0]);
         const xl = parseFloat(parts[1]);
         const x = parseFloat(parts[2]);
         const y = parseFloat(parts[3]);
         const z = parseFloat(parts[4]);
-        
+
         if (isNaN(il) || isNaN(xl) || isNaN(x) || isNaN(y) || isNaN(z)) continue;
-        
+
         // Round IL/XL to integers for indexing
         const il_idx = Math.round(il);
         const xl_idx = Math.round(xl);
-        
+
         minIL = Math.min(minIL, il_idx);
         maxIL = Math.max(maxIL, il_idx);
         minXL = Math.min(minXL, xl_idx);
         maxXL = Math.max(maxXL, xl_idx);
-        
+
         data[`${il_idx}_${xl_idx}`] = { x, y, z };
         parsedCount++;
     }
-    
+
     console.log(`Parsed ${parsedCount} points. IL range: ${minIL}-${maxIL}, XL range: ${minXL}-${maxXL}`);
     return { data, minIL, maxIL, minXL, maxXL };
 }
+
+/**
+ * Parse a fault CSV that has columns: IL, XL, K, X, Y, Z
+ * Returns an array of {il, xl, k, x, y, z} objects.
+ */
+function parseFaultCSV(text) {
+    const lines = text.split('\n');
+    const pts = [];
+    // Detect whether K column exists by reading the header
+    const header = lines[0].trim().toUpperCase().split(',');
+    const hasK = header.length >= 6 && header[2] === 'K';
+
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const p = line.split(',');
+        if (hasK && p.length < 6) continue;
+        if (!hasK && p.length < 5) continue;
+
+        const il = Math.round(parseFloat(p[0]));
+        const xl = Math.round(parseFloat(p[1]));
+        let k, x, y, z;
+        if (hasK) {
+            k  = Math.round(parseFloat(p[2]));
+            x  = parseFloat(p[3]);
+            y  = parseFloat(p[4]);
+            z  = parseFloat(p[5]);
+        } else {
+            k  = 0;
+            x  = parseFloat(p[2]);
+            y  = parseFloat(p[3]);
+            z  = parseFloat(p[4]);
+        }
+        if (isNaN(x) || isNaN(z)) continue;
+        pts.push({ il, xl, k, x, y, z });
+    }
+    return pts;
+}
+
 
 // Contour Shader
 const contourMaterial = new THREE.ShaderMaterial({
@@ -224,7 +336,7 @@ const contourMaterial = new THREE.ShaderMaterial({
     transparent: true,
     side: THREE.DoubleSide,
     polygonOffset: true,
-    polygonOffsetFactor: -1, 
+    polygonOffsetFactor: -1,
     polygonOffsetUnits: -1
 });
 
@@ -246,19 +358,33 @@ async function loadHorizon(name, url, color) {
     }
 }
 
+/** Load a fault CSV (IL, XL, K, X, Y, Z) and return an array of point objects. */
+async function loadFault(name, url, color) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const text = await response.text();
+        const pts = parseFaultCSV(text);
+        return { name, color, pts };
+    } catch (e) {
+        console.error(`Failed to load fault ${name}`, e);
+        return null;
+    }
+}
+
 async function initVolveData() {
     console.log("Starting initVolveData...");
     updateLoading("Fetching Volve Field Data...");
-    
+
     const horizons = await Promise.all([
         loadHorizon("BCU (Base Cretaceous Unconformity)", "BCU.csv", 0x4ECDC4),
         loadHorizon("Hugin Fm Top", "Hugin_Fm_Top.csv", 0xFF6B6B),
         loadHorizon("Hugin Fm Base", "Hugin_Fm_Base.csv", 0x45B7D1)
     ]);
-    
+
     const validHorizons = horizons.filter(h => h !== null);
     console.log(`Loaded ${validHorizons.length} valid horizons`);
-    
+
     if (validHorizons.length === 0) {
         updateLoading("Error: No data loaded.");
         return;
@@ -276,7 +402,7 @@ async function initVolveData() {
     }
 
     const sampleSize = Math.min(keys.length, 1000);
-    for(let i=0; i<sampleSize; i++) {
+    for (let i = 0; i < sampleSize; i++) {
         const pt = ref.data[keys[i]];
         sumX += pt.x;
         sumY += pt.y;
@@ -292,12 +418,12 @@ async function initVolveData() {
         // Grid dimensions
         const width = h.maxIL - h.minIL + 1;
         const height = h.maxXL - h.minXL + 1;
-        
+
         console.log(`Grid size: ${width} x ${height}`);
 
         if (width <= 0 || height <= 0 || !isFinite(width) || !isFinite(height)) {
-             console.error(`Invalid grid dimensions for ${h.name}: ${width}x${height}`);
-             return;
+            console.error(`Invalid grid dimensions for ${h.name}: ${width}x${height}`);
+            return;
         }
 
         // Calculate average Z for hole filling (better than NaN for bounding box safety)
@@ -313,62 +439,62 @@ async function initVolveData() {
         const geometry = new THREE.PlaneGeometry(1, 1, width - 1, height - 1);
         const posAttr = geometry.attributes.position;
         const invalidIndices = new Set();
-        
+
         let validPoints = 0;
         for (let ix = 0; ix < width; ix++) {
             for (let iy = 0; iy < height; iy++) {
                 const il = h.minIL + ix;
                 const xl = h.minXL + iy;
                 const pt = h.data[`${il}_${xl}`];
-                
+
                 const idx = iy * width + ix;
-                
+
                 if (pt) {
-                    posAttr.setXYZ(idx, 
-                        pt.x - centerX, 
-                        -pt.z,           
-                        -(pt.y - centerY) 
+                    posAttr.setXYZ(idx,
+                        pt.x - centerX,
+                        -pt.z,
+                        -(pt.y - centerY)
                     );
                     validPoints++;
                 } else {
                     // Mark as invalid
                     invalidIndices.add(idx);
                     // Set to 0 (won't be rendered anyway after index cleanup)
-                    posAttr.setXYZ(idx, 0, 0, 0); 
+                    posAttr.setXYZ(idx, 0, 0, 0);
                 }
             }
         }
-        console.log(`Mesh built with ${validPoints} valid vertices out of ${width*height} total grid points`);
-        
+        console.log(`Mesh built with ${validPoints} valid vertices out of ${width * height} total grid points`);
+
         // CLEANUP INDICES: Remove triangles connected to invalid vertices
         const indexAttr = geometry.index;
         const indices = indexAttr.array;
         const newIndices = [];
-        
+
         for (let i = 0; i < indices.length; i += 3) {
             const a = indices[i];
-            const b = indices[i+1];
-            const c = indices[i+2];
-            
+            const b = indices[i + 1];
+            const c = indices[i + 2];
+
             // If any vertex of the triangle is invalid, skip this triangle
             if (!invalidIndices.has(a) && !invalidIndices.has(b) && !invalidIndices.has(c)) {
                 newIndices.push(a, b, c);
             }
         }
-        
+
         geometry.setIndex(newIndices);
-        
+
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
-        
-        const material = new THREE.MeshStandardMaterial({ 
-            color: h.color, 
+
+        const material = new THREE.MeshStandardMaterial({
+            color: h.color,
             side: THREE.DoubleSide,
             wireframe: false,
             roughness: 0.6,
             metalness: 0.2
         });
-        
+
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.originalColor = h.color; // Save for toggling
         mesh.userData.layerName = h.name; // Store for layer controls
@@ -387,7 +513,7 @@ async function initVolveData() {
     const box = new THREE.Box3().setFromObject(modelGroup);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    
+
     console.log("Model Bounding Box:", box);
     console.log("Model Center:", center);
     console.log("Model Size:", size);
@@ -408,25 +534,25 @@ async function initVolveData() {
     // Target: (3847.87, -3407.03, 82.23)
     // Position: (2420.21, -826.12, -5492.54)
     // Direction Vector = Position - Target = (-1427.66, 2580.91, -5574.77)
-    
+
     const viewVector = new THREE.Vector3(-1427.66, 2580.91, -5574.77).normalize();
     const maxDim = Math.max(size.x, size.y, size.z);
-    
+
     // New distance is approx 6300m for model size 8200m -> 0.77x
-    const viewDistance = maxDim * 0.77; 
-    
+    const viewDistance = maxDim * 0.77;
+
     // Set Target to Model Center, but offset DOWN to move model UP on screen
-    const targetOffset = new THREE.Vector3(0, -maxDim * 0.2, 0); 
+    const targetOffset = new THREE.Vector3(0, -maxDim * 0.2, 0);
     controls.target.copy(center).add(targetOffset);
-    
+
     // Set Position relative to Center
     const cameraPos = controls.target.clone().add(viewVector.multiplyScalar(viewDistance));
     camera.position.copy(cameraPos);
-    
+
     camera.near = 10;
-    camera.far = viewDistance * 20; 
+    camera.far = viewDistance * 20;
     camera.updateProjectionMatrix();
-    
+
     console.log("Camera Position (Dynamic):", camera.position);
     console.log("Camera Near/Far:", camera.near, camera.far);
 
@@ -435,7 +561,7 @@ async function initVolveData() {
 
     // Apply Visualization Defaults
     updateColoring(); // Apply depth coloring if enabled
-    
+
     // Apply contour defaults
     modelGroup.children.forEach(c => {
         if (c.userData.isContour) {
@@ -601,10 +727,13 @@ window.closeModal = (id) => {
 };
 
 // ... Rest of script ...
-const params = {
+const PARAMS_STORAGE_KEY = 'geo_viewer_params';
+
+const _paramsDefaults = {
     wireframe: false,
     flatShading: false,
     colorByDepth: true,
+    faultSmoothIterations: 3,
     selectedColormap: 'Warm',
     showContours: true,
     contourInterval: 44.59,
@@ -619,6 +748,22 @@ const params = {
     lightingEnabled: true
 };
 
+// Merge any previously saved values over the defaults
+try {
+    const stored = JSON.parse(localStorage.getItem(PARAMS_STORAGE_KEY) || '{}');
+    Object.assign(_paramsDefaults, stored);
+} catch(e) { /* corrupt storage — use defaults */ }
+
+// Proxy: auto-save to localStorage on every property write so every GUI change is persisted
+const params = new Proxy(_paramsDefaults, {
+    set(target, key, value) {
+        target[key] = value;
+        try { localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(target)); } catch(e) {}
+        return true;
+    }
+});
+
+
 // Global Layer State for Presets
 const layerState = {};
 
@@ -628,69 +773,185 @@ let savedPresets = {
 };
 
 // Create Layer Controls dynamically
-const layerFolder = gui.addFolder('Layers');
+let layerFolder = gui.addFolder('Layers');
 
-function initLayerControls(horizons) {
-    horizons.forEach(h => {
-        const folder = layerFolder.addFolder(h.name);
-        
-        // Defaults per layer
-        let defaultVisible = false;
-        let defaultOpacity = 1.0;
-        
-        // Only Hugin Fm Base visible by default
-        if (h.name.includes("Hugin Fm Base")) {
-            defaultVisible = true;
+// ── Douglas-Peucker 3D stick simplification ──────────────────────────────────
+// Removes near-collinear intermediate points from each fault stick polyline.
+// This reduces ~22 K-layer vertices (only ~3m apart) to 2-4 representative
+// points while preserving genuine bends, dramatically cutting ribbon vertex count.
+function _ptSegDist3(p, a, b) {
+    const abx=b.x-a.x, aby=b.y-a.y, abz=b.z-a.z;
+    const apx=p.x-a.x, apy=p.y-a.y, apz=p.z-a.z;
+    const ab2=abx*abx+aby*aby+abz*abz;
+    const t=ab2>0 ? Math.max(0,Math.min(1,(apx*abx+apy*aby+apz*abz)/ab2)) : 0;
+    const dx=a.x+t*abx-p.x, dy=a.y+t*aby-p.y, dz=a.z+t*abz-p.z;
+    return Math.sqrt(dx*dx+dy*dy+dz*dz);
+}
+function simplifyStick(pts, eps) {
+    if (pts.length<=2) return pts;
+    let maxD=0, maxI=0;
+    for (let i=1;i<pts.length-1;i++) {
+        const d=_ptSegDist3(pts[i],pts[0],pts[pts.length-1]);
+        if (d>maxD){maxD=d;maxI=i;}
+    }
+    if (maxD>eps) {
+        const L=simplifyStick(pts.slice(0,maxI+1),eps);
+        const R=simplifyStick(pts.slice(maxI),eps);
+        return [...L.slice(0,-1),...R];
+    }
+    return [pts[0],pts[pts.length-1]];
+}
+// Centroid-path smoothing for fault ribbons.
+// Applies N iterations of 1D Laplacian smoothing to the XY centroid path of
+// each fault's sorted sticks (rounding staircase corners), then rebuilds the
+// vertex buffer.  Canonical sticks are stored on mesh.userData at build time.
+function applyFaultSmoothing(iterations) {
+    const LAMBDA = 0.5;
+    modelGroup.children.forEach(mesh => {
+        if (!mesh.userData.isFault || !mesh.userData.canonicalSticks) return;
+        if (!(mesh instanceof THREE.Mesh)) return;
+
+        // Deep-clone canonical sticks so we don't mutate the source
+        let sticks = mesh.userData.canonicalSticks.map(s => s.map(p => ({...p})));
+        const n = sticks.length;
+
+        for (let iter = 0; iter < iterations; iter++) {
+            // Compute centroids of current positions
+            const cx = sticks.map(s => s.reduce((a,p)=>a+p.x,0)/s.length);
+            const cy = sticks.map(s => s.reduce((a,p)=>a+p.y,0)/s.length);
+            // Laplacian move: interior sticks only (boundary sticks are fixed)
+            const newCx = [...cx], newCy = [...cy];
+            for (let i = 1; i < n-1; i++) {
+                newCx[i] = cx[i] + LAMBDA * ((cx[i-1]+cx[i+1])/2 - cx[i]);
+                newCy[i] = cy[i] + LAMBDA * ((cy[i-1]+cy[i+1])/2 - cy[i]);
+            }
+            // Translate all points in each stick by the centroid delta
+            for (let i = 0; i < n; i++) {
+                const dx = newCx[i] - cx[i], dy = newCy[i] - cy[i];
+                sticks[i].forEach(p => { p.x += dx; p.y += dy; });
+            }
         }
-        
-        // Initialize State
-        layerState[h.name] = {
-            visible: defaultVisible,
-            opacity: defaultOpacity
-        };
-        
-        // Apply initial visibility/opacity
+
+        // Rebuild vertex buffer from smoothed sticks
+        const geo = mesh.geometry;
+        const pos = geo.attributes.position;
+        const centerX = mesh.userData.centerX, centerY = mesh.userData.centerY;
+        let vIdx = 0;
+        const validStripIndices = mesh.userData.validStripIndices || [];
+        for (const si of validStripIndices) {
+            const sA = sticks[si], sB = sticks[si+1];
+            if (!sA || !sB) continue;
+            for (const p of sA) { pos.setXYZ(vIdx++, p.x-centerX, -p.z, -(p.y-centerY)); }
+            for (const p of sB) { pos.setXYZ(vIdx++, p.x-centerX, -p.z, -(p.y-centerY)); }
+        }
+        pos.needsUpdate = true;
+        geo.computeVertexNormals();
+        geo.computeBoundingBox();
+    });
+}
+
+function initLayerControls(layers) {
+    // ── Global fault visibility toggle ───────────────
+    const faultLayers = layers.filter(l => l.isFault);
+    const hasFaults = faultLayers.length > 0;
+
+    const faultToggleState = { visible: true };
+    let masterFaultCtrl = null;
+    const individualFaultCtrls = [];
+
+    if (hasFaults) {
+        masterFaultCtrl = layerFolder.add(faultToggleState, 'visible').name('Show All Faults').onChange(v => {
+            faultLayers.forEach(f => {
+                layerState[f.name].visible = v;
+                modelGroup.children.forEach(c => {
+                    if (c.userData.layerName === f.name) c.visible = v;
+                });
+            });
+            individualFaultCtrls.forEach(ctrl => ctrl.updateDisplay());
+        });
+    }
+
+    // ── Per-layer controls for non-fault horizons ────
+    layers.forEach(h => {
+        if (h.isFault) return;
+
+        const folder = layerFolder.addFolder(h.name);
+        const _storedLayer = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + h.name) || 'null'); } catch(e){ return null; } })();
+        layerState[h.name] = { visible: _storedLayer?.visible ?? true, opacity: _storedLayer?.opacity ?? 1.0 };
+
+        // Initialise scene from stored state
+        const _ls = layerState[h.name];
         modelGroup.children.forEach(c => {
             if (c.userData.layerName === h.name) {
                 if (c.userData.isContour) {
-                    // Initialize tracking state
-                    c.userData.layerVisible = defaultVisible;
-                    // Only visible if layer is visible AND global contours are on
-                    c.visible = defaultVisible && params.showContours;
+                    c.userData.layerVisible = _ls.visible;
+                    c.visible = _ls.visible && params.showContours;
                 } else {
-                    c.visible = defaultVisible;
-                    c.material.transparent = true; // Always transparent
-                    c.material.opacity = defaultOpacity;
+                    c.visible = _ls.visible;
+                    c.material.transparent = true;
+                    c.material.opacity = _ls.opacity;
                 }
             }
         });
-        
+
         folder.add(layerState[h.name], 'visible').onChange(v => {
             modelGroup.children.forEach(c => {
                 if (c.userData.layerName === h.name) {
-                    if (c.userData.isContour) {
-                        c.userData.layerVisible = v;
-                        c.visible = v && params.showContours;
-                    } else {
-                        c.visible = v;
-                    }
+                    if (c.userData.isContour) { c.userData.layerVisible = v; c.visible = v && params.showContours; }
+                    else { c.visible = v; }
                 }
             });
+            try { localStorage.setItem('geo_layer_' + h.name, JSON.stringify(layerState[h.name])); } catch(e) {}
         });
-        
+
         folder.add(layerState[h.name], 'opacity', 0, 1).onChange(v => {
             modelGroup.children.forEach(c => {
                 if (c.userData.layerName === h.name) {
-                    // Always keep transparent=true to ensure consistent rendering with topology lines
-                    // otherwise switching between opaque/transparent queues causes z-fighting or blending issues
-                    c.material.transparent = true; 
-                    c.material.opacity = v;
-                    c.material.needsUpdate = true;
+                    c.material.transparent = true; c.material.opacity = v; c.material.needsUpdate = true;
                 }
             });
+            try { localStorage.setItem('geo_layer_' + h.name, JSON.stringify(layerState[h.name])); } catch(e) {}
         });
     });
+
+    // ── Individual fault toggles in a collapsible sub-folder ──
+    if (hasFaults) {
+        const faultFolder = layerFolder.addFolder('Faults ▾');
+        faultFolder.close();
+
+        faultLayers.forEach(f => {
+            const _storedFault = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + f.name) || 'null'); } catch(e){ return null; } })();
+            layerState[f.name] = { visible: _storedFault?.visible ?? true, opacity: _storedFault?.opacity ?? 0.75 };
+
+            modelGroup.children.forEach(c => {
+                if (c.userData.layerName === f.name) {
+                    c.visible = layerState[f.name].visible;
+                    if (c.material) { c.material.transparent = true; c.material.opacity = 0.75; }
+                }
+            });
+
+            const ctrl = faultFolder.add(layerState[f.name], 'visible').name(f.name).onChange(v => {
+                modelGroup.children.forEach(c => {
+                    if (c.userData.layerName === f.name) c.visible = v;
+                });
+                try { localStorage.setItem('geo_layer_' + f.name, JSON.stringify(layerState[f.name])); } catch(e) {}
+                // Sync master: uncheck if any off, check if all on
+                if (masterFaultCtrl) {
+                    const allOn = faultLayers.every(fl => layerState[fl.name].visible);
+                    faultToggleState.visible = allOn;
+                    masterFaultCtrl.updateDisplay();
+                }
+            });
+            individualFaultCtrls.push(ctrl);
+        });
+
+        // ── Smoothing slider ──────────────────────────────────────────────────
+        faultFolder.add(params, 'faultSmoothIterations', 0, 8, 1)
+            .name('Smoothing (iterations)')
+            .onChange(v => { applyFaultSmoothing(v); updateColoring(); });
+    }
 }
+
 
 
 function getCurrentState() {
@@ -700,18 +961,34 @@ function getCurrentState() {
     };
 }
 
+// Toggle scene lighting on/off. When disabled, boost ambient so the scene is
+// still visible but shading-free; when enabled, restore the stored intensities.
+function updateMaterialType(enabled) {
+    if (enabled) {
+        ambientLight.intensity          = params.ambientIntensity;
+        if (mainLight) mainLight.intensity = params.sunIntensity;
+        headLight.intensity             = params.headlampIntensity;
+        hemiLight.intensity             = params.hemiIntensity;
+    } else {
+        ambientLight.intensity          = 8.0; // flat, unshaded look
+        if (mainLight) mainLight.intensity = 0;
+        headLight.intensity             = 0;
+        hemiLight.intensity             = 0;
+    }
+}
+
 function applyState(state) {
     // 1. Update Params
     Object.assign(params, state.params);
-    
+
     // 2. Update Layer State
     Object.assign(layerState, state.layers);
-    
+
     // 3. Update GUI Controllers
     gui.controllersRecursive().forEach(c => c.updateDisplay());
-    
+
     // 4. Apply Side Effects
-    
+
     // Layers
     Object.keys(layerState).forEach(name => {
         const s = layerState[name];
@@ -723,16 +1000,17 @@ function applyState(state) {
                 } else {
                     c.visible = s.visible;
                     c.material.transparent = true;
-                    c.material.opacity = s.opacity;
+                    // s.opacity may be undefined for fault layers — use existing value as fallback
+                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
                 }
             }
         });
     });
-    
+
     // Coloring & Material
     updateMaterialType(params.lightingEnabled);
     updateColoring(); // Handles depth coloring
-    
+
     // Contours
     modelGroup.children.forEach(c => {
         if (c.userData.isContour) {
@@ -744,17 +1022,17 @@ function applyState(state) {
             if (!params.showContours) c.visible = false;
         }
     });
-    
+
     // Lighting
     ambientLight.intensity = params.ambientIntensity;
-    if(mainLight) mainLight.intensity = params.sunIntensity;
+    if (mainLight) mainLight.intensity = params.sunIntensity;
     headLight.intensity = params.headlampIntensity;
     hemiLight.intensity = params.hemiIntensity;
-    
+
     // Model Transform
     modelGroup.children.forEach(c => c.material.wireframe = params.wireframe);
-    modelGroup.children.forEach(c => { 
-        if(!c.userData.isContour) c.material.flatShading = params.flatShading; 
+    modelGroup.children.forEach(c => {
+        if (!c.userData.isContour) c.material.flatShading = params.flatShading;
         c.material.needsUpdate = true;
     });
     modelGroup.scale.y = params.zScale;
@@ -765,7 +1043,7 @@ function applyState(state) {
 function updatePresetDropdown(selectName) {
     const select = document.getElementById('presetSelect');
     select.innerHTML = '';
-    
+
     Object.keys(savedPresets).forEach(name => {
         const option = document.createElement('option');
         option.value = name;
@@ -784,10 +1062,10 @@ function initPresets() {
     if (stored) {
         savedPresets = JSON.parse(stored);
     }
-    
+
     // Capture Default
     savedPresets['Default'] = getCurrentState();
-    
+
     updatePresetDropdown('Default');
 
     // Event Listeners
@@ -809,10 +1087,10 @@ function initPresets() {
     document.getElementById('confirmSave').addEventListener('click', () => {
         const name = document.getElementById('presetNameInput').value.trim();
         if (!name) return alert("Please enter a name");
-        
+
         savedPresets[name] = getCurrentState();
         localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets));
-        
+
         updatePresetDropdown(name);
         closeModal('saveModal');
     });
@@ -821,7 +1099,7 @@ function initPresets() {
     document.getElementById('btnDelete').addEventListener('click', () => {
         const name = document.getElementById('presetSelect').value;
         if (name === 'Default') return alert("Cannot delete Default preset");
-        
+
         document.getElementById('deleteTargetName').textContent = name;
         document.getElementById('deleteModal').style.display = 'flex';
     });
@@ -830,7 +1108,7 @@ function initPresets() {
         const name = document.getElementById('presetSelect').value;
         delete savedPresets[name];
         localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets));
-        
+
         updatePresetDropdown('Default');
         applyState(savedPresets['Default']);
         closeModal('deleteModal');
@@ -844,7 +1122,7 @@ function updateColoring() {
         modelGroup.children.forEach(mesh => {
             if (mesh.userData.isContour) return; // Skip contours
             const pos = mesh.geometry.attributes.position;
-            for(let i=0; i<pos.count; i++) {
+            for (let i = 0; i < pos.count; i++) {
                 // Remember Y in Three is -Z in Geo (Depth)
                 // So lower Y is deeper.
                 // We want deeper (lower Y) to be start of ramp?
@@ -853,9 +1131,9 @@ function updateColoring() {
                 // So Deep = Large Value. Shallow = Small Value.
                 // Let's stick to Y: Min Y (deepest) to Max Y (shallowest)
                 const y = pos.getY(i);
-                if(!isNaN(y) && y !== 0) { // check for holes (0 or NaN)
-                    if(y < minZ) minZ = y;
-                    if(y > maxZ) maxZ = y;
+                if (!isNaN(y) && y !== 0) { // check for holes (0 or NaN)
+                    if (y < minZ) minZ = y;
+                    if (y > maxZ) maxZ = y;
                 }
             }
         });
@@ -863,25 +1141,25 @@ function updateColoring() {
         // Apply vertex colors
         modelGroup.children.forEach(mesh => {
             if (mesh.userData.isContour) return;
-            
+
             const geometry = mesh.geometry;
             const count = geometry.attributes.position.count;
             const colors = new Float32Array(count * 3);
             const pos = geometry.attributes.position;
-            
+
             for (let i = 0; i < count; i++) {
                 const y = pos.getY(i);
                 // Normalize 0..1
                 // t=0 at minZ (deep), t=1 at maxZ (shallow)
                 const t = (y - minZ) / (maxZ - minZ);
-                
+
                 const color = getColormapColor(params.selectedColormap, t);
-                
+
                 colors[i * 3] = color.r;
                 colors[i * 3 + 1] = color.g;
                 colors[i * 3 + 2] = color.b;
             }
-            
+
             geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
             mesh.material.vertexColors = true;
             mesh.material.color.set(0xffffff); // Reset base color
@@ -891,7 +1169,7 @@ function updateColoring() {
         // Revert to original layer colors
         modelGroup.children.forEach(mesh => {
             if (mesh.userData.isContour) return;
-            
+
             mesh.material.vertexColors = false;
             if (mesh.userData.originalColor) {
                 mesh.material.color.setHex(mesh.userData.originalColor);
@@ -923,7 +1201,7 @@ depthFolder.add(params, 'colorByDepth').name('Enable').onChange((v) => {
 });
 
 depthFolder.add(params, 'selectedColormap', Object.keys(ColormapRegistry)).name('Colormap').onChange((v) => {
-    if(params.colorByDepth) updateColoring();
+    if (params.colorByDepth) updateColoring();
 });
 
 const topoFolder = vizFolder.addFolder('Topology Lines');
@@ -981,7 +1259,7 @@ lightFolder.add(params, 'ambientIntensity', 0, 10).name('Ambient Light').onChang
     ambientLight.intensity = v;
 });
 lightFolder.add(params, 'sunIntensity', 0, 10).name('Sun Light').onChange(v => {
-    if(mainLight) mainLight.intensity = v;
+    if (mainLight) mainLight.intensity = v;
 });
 lightFolder.add(params, 'headlampIntensity', 0, 5).name('Headlamp').onChange(v => {
     headLight.intensity = v;
@@ -991,20 +1269,500 @@ lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
 });
 
 
-// Animation
+// ─────────────────────────────────────────────────────────────
+// NORNE FIELD
+// ─────────────────────────────────────────────────────────────
+
+async function initNorneData() {
+    console.log('Starting initNorneData...');
+    updateLoading('Fetching Norne Field Data...');
+
+    // Load horizons and faults in parallel
+    // All Norne fault CSV files extracted from IRAP_1005.GRDECL + FAULT_JUN_05.INC
+    // Grouped by structural family with a distinct colour per family.
+    const faultDefs = [
+        // Main border faults
+        { file: 'Fault_m_west.csv',          name: 'm_west',         color: 0xFFD700 },
+        { file: 'Fault_m_east.csv',           name: 'm_east',         color: 0xFF4500 },
+        { file: 'Fault_norne_m_north.csv',    name: 'm_north',        color: 0xFF6B35 },
+        { file: 'Fault_norne_m_northe.csv',   name: 'm_northe',       color: 0xFF8C42 },
+        { file: 'Fault_norne_m_east_2.csv',   name: 'm_east_2',       color: 0xFFA040 },
+        // BC / Big Central family
+        { file: 'Fault_norne_BC.csv',         name: 'BC',             color: 0x4ECDC4 },
+        { file: 'Fault_norne_B2.csv',         name: 'B2',             color: 0x6EE0D8 },
+        // EF / GH / IH backbone faults
+        { file: 'Fault_norne_EF.csv',         name: 'EF',             color: 0xA8DADC },
+        { file: 'Fault_norne_GH.csv',         name: 'GH',             color: 0x457B9D },
+        { file: 'Fault_norne_IH.csv',         name: 'IH',             color: 0x1D3557 },
+        // DE family
+        { file: 'Fault_norne_DE_0.csv',       name: 'DE_0',           color: 0xE63946 },
+        { file: 'Fault_norne_DE_B3.csv',      name: 'DE_B3',          color: 0xEF6E6E },
+        { file: 'Fault_norne_DE_1.csv',       name: 'DE_1',           color: 0xF4A261 },
+        { file: 'Fault_norne_DE_1_LTo.csv',   name: 'DE_1_LTo',       color: 0xE9C46A },
+        { file: 'Fault_norne_DE_2.csv',       name: 'DE_2',           color: 0xF4D35E },
+        // DI family
+        { file: 'Fault_norne_DI.csv',         name: 'DI',             color: 0x2A9D8F },
+        { file: 'Fault_norne_DI_S.csv',       name: 'DI_S',           color: 0x57CC99 },
+        // CD family
+        { file: 'Fault_norne_CD_0.csv',       name: 'CD_0',           color: 0xC77DFF },
+        { file: 'Fault_norne_CD_B3.csv',      name: 'CD_B3',          color: 0x9D4EDD },
+        { file: 'Fault_norne_CD.csv',         name: 'CD',             color: 0x7B2FBE },
+        { file: 'Fault_norne_CD_To.csv',      name: 'CD_To',          color: 0x5C2187 },
+        { file: 'Fault_norne_CD_1.csv',       name: 'CD_1',           color: 0x3A1060 },
+        // D family
+        { file: 'Fault_norne_D_05.csv',       name: 'D_05',           color: 0xFB8500 },
+        // E family
+        { file: 'Fault_norne_E_01.csv',       name: 'E_01',           color: 0xFF006E },
+        { file: 'Fault_norne_E_01_F3.csv',    name: 'E_01_F3',        color: 0xFF5C8A },
+        // G family
+        { file: 'Fault_norne_G_01.csv',       name: 'G_01',           color: 0x06D6A0 },
+        { file: 'Fault_norne_G_02.csv',       name: 'G_02',           color: 0x1B9AAA },
+        { file: 'Fault_norne_G_03.csv',       name: 'G_03',           color: 0x06A3B7 },
+        { file: 'Fault_norne_G_05.csv',       name: 'G_05',           color: 0x0DCEDA },
+        { file: 'Fault_norne_G_07.csv',       name: 'G_07',           color: 0x00F5D4 },
+        { file: 'Fault_norne_G_08.csv',       name: 'G_08',           color: 0x00BBF9 },
+        { file: 'Fault_norne_G_09.csv',       name: 'G_09',           color: 0x0077B6 },
+        { file: 'Fault_norne_G_13.csv',       name: 'G_13',           color: 0x023E8A },
+        // H family
+        { file: 'Fault_norne_H_03.csv',       name: 'H_03',           color: 0xF72585 },
+        // C family (many small cross-faults)
+        { file: 'Fault_norne_C_01.csv',       name: 'C_01',           color: 0xB5179E },
+        { file: 'Fault_norne_C_01_Ti.csv',    name: 'C_01_Ti',        color: 0xC45EAD },
+        { file: 'Fault_norne_C_02.csv',       name: 'C_02',           color: 0xD4A5C9 },
+        { file: 'Fault_norne_C_04.csv',       name: 'C_04',           color: 0xA0BBDD },
+        { file: 'Fault_norne_C_05.csv',       name: 'C_05',           color: 0x80A8D0 },
+        { file: 'Fault_norne_C_06.csv',       name: 'C_06',           color: 0x6095C3 },
+        { file: 'Fault_norne_C_08.csv',       name: 'C_08',           color: 0x4082B6 },
+        { file: 'Fault_norne_C_08_Ile.csv',   name: 'C_08_Ile',       color: 0x346FA3 },
+        { file: 'Fault_norne_C_08_S.csv',     name: 'C_08_S',         color: 0x285C90 },
+        { file: 'Fault_norne_C_08_S_Ti.csv',  name: 'C_08_S_Ti',      color: 0x1C497D },
+        { file: 'Fault_norne_C_08_Ti.csv',    name: 'C_08_Ti',        color: 0x10366A },
+        { file: 'Fault_norne_C_09.csv',       name: 'C_09',           color: 0xF9C74F },
+        { file: 'Fault_norne_C_10.csv',       name: 'C_10',           color: 0xF8961E },
+        { file: 'Fault_norne_C_12.csv',       name: 'C_12',           color: 0xF3722C },
+        { file: 'Fault_norne_C_20.csv',       name: 'C_20',           color: 0x90BE6D },
+        { file: 'Fault_norne_C_20_LTo.csv',   name: 'C_20_LTo',       color: 0x79A855 },
+        { file: 'Fault_norne_C_21.csv',       name: 'C_21',           color: 0x62923D },
+        { file: 'Fault_norne_C_21_Ti.csv',    name: 'C_21_Ti',        color: 0x4B7C25 },
+        { file: 'Fault_norne_C_22.csv',       name: 'C_22',           color: 0x34660D },
+        { file: 'Fault_norne_C_23.csv',       name: 'C_23',           color: 0xAACC00 },
+        { file: 'Fault_norne_C_24.csv',       name: 'C_24',           color: 0xBBDF00 },
+        { file: 'Fault_norne_C_25.csv',       name: 'C_25',           color: 0xCCF200 },
+        { file: 'Fault_norne_C_26.csv',       name: 'C_26',           color: 0xDDFF00 },
+        { file: 'Fault_norne_C_26N.csv',      name: 'C_26N',          color: 0xEEFF33 },
+        { file: 'Fault_norne_C_27.csv',       name: 'C_27',           color: 0xFFFF66 },
+        { file: 'Fault_norne_C_28.csv',       name: 'C_28',           color: 0xFFEE44 },
+        { file: 'Fault_norne_C_29.csv',       name: 'C_29',           color: 0xFFDD22 },
+    ];
+
+    const [horizonResults, faultResults] = await Promise.all([
+        Promise.all([
+            loadHorizon('Åre Fm Top',   'Norne_Are_Top.csv',   0xFF6B6B),  // K=0  warm red
+            loadHorizon('Tilje Fm Top', 'Norne_Tilje_Top.csv', 0xFFAA44),  // K=3  orange
+            loadHorizon('Ile Fm Top',   'Norne_Ile_Top.csv',   0xFFDD22),  // K=6  yellow
+            loadHorizon('Tofte Fm Top', 'Norne_Tofte_Top.csv', 0x66CC66),  // K=12 green
+            loadHorizon('Garn Fm Top',  'Norne_Garn_Top.csv',  0x4ECDC4),  // K=16 teal
+            loadHorizon('Not Fm Top',   'Norne_Not_Top.csv',   0x45B7D1),  // K=19 blue
+            loadHorizon('Norne Base',   'Norne_Base.csv',      0x9B59B6)   // K=21 purple
+        ]),
+
+        Promise.all(faultDefs.map(fd => loadFault(fd.name, fd.file, fd.color)))
+    ]);
+
+    const validHorizons = horizonResults.filter(h => h !== null);
+    const validFaults = faultResults.filter(f => f !== null);
+    console.log(`Loaded ${validHorizons.length} horizons, ${validFaults.length} faults`);
+
+    if (validHorizons.length === 0 && validFaults.length === 0) {
+        updateLoading('Error: No Norne data loaded.');
+        return;
+    }
+
+    updateLoading('Processing Norne Geometry...');
+
+    // Center calculation — use first horizon if available, else first fault
+    let centerX, centerY;
+    if (validHorizons.length > 0) {
+        const ref = validHorizons[0];
+        const keys = Object.keys(ref.data);
+        const sampleSize = Math.min(keys.length, 1000);
+        let sumX = 0, sumY = 0;
+        for (let i = 0; i < sampleSize; i++) {
+            const pt = ref.data[keys[i]];
+            sumX += pt.x; sumY += pt.y;
+        }
+        centerX = sumX / sampleSize;
+        centerY = sumY / sampleSize;
+    } else {
+        const pts = validFaults[0].pts;
+        const n = Math.min(pts.length, 500);
+        let sumX = 0, sumY = 0;
+        for (let i = 0; i < n; i++) { sumX += pts[i].x; sumY += pts[i].y; }
+        centerX = sumX / n; centerY = sumY / n;
+    }
+    console.log(`Norne center: ${centerX.toFixed(1)}, ${centerY.toFixed(1)}`);
+
+    // ── Horizon meshes (stride-aware: IL/XL step by 10 in Norne CSV) ──
+    validHorizons.forEach(h => {
+        // Compute stride from the actual IL/XL values
+        const allILs = [...new Set(Object.keys(h.data).map(k => parseInt(k.split('_')[0])))].sort((a,b) => a-b);
+        const allXLs = [...new Set(Object.keys(h.data).map(k => parseInt(k.split('_')[1])))].sort((a,b) => a-b);
+        const strideIL = allILs.length > 1 ? allILs[1] - allILs[0] : 1;
+        const strideXL = allXLs.length > 1 ? allXLs[1] - allXLs[0] : 1;
+        const width = allILs.length;
+        const height = allXLs.length;
+        console.log(`Norne mesh "${h.name}": ${width} x ${height}, stride IL=${strideIL} XL=${strideXL}`);
+
+        if (width <= 0 || height <= 0) {
+            console.error(`Invalid grid for ${h.name}: ${width}x${height}`);
+            return;
+        }
+
+        const geometry = new THREE.PlaneGeometry(1, 1, width - 1, height - 1);
+        const posAttr = geometry.attributes.position;
+        const invalidIndices = new Set();
+
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                // Use actual IL/XL values as keys (not sequential offsets)
+                const ilVal = allILs[ix];
+                const xlVal = allXLs[iy];
+                const pt = h.data[`${ilVal}_${xlVal}`];
+                const idx = iy * width + ix;
+                if (pt) {
+                    posAttr.setXYZ(idx, pt.x - centerX, -pt.z, -(pt.y - centerY));
+                } else {
+                    invalidIndices.add(idx);
+                    posAttr.setXYZ(idx, 0, 0, 0);
+                }
+            }
+        }
+
+        // Remove degenerate triangles
+        const rawIndices = geometry.index.array;
+        const cleanIndices = [];
+        for (let i = 0; i < rawIndices.length; i += 3) {
+            const a = rawIndices[i], b = rawIndices[i + 1], c = rawIndices[i + 2];
+            if (!invalidIndices.has(a) && !invalidIndices.has(b) && !invalidIndices.has(c)) {
+                cleanIndices.push(a, b, c);
+            }
+        }
+        geometry.setIndex(cleanIndices);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+
+        const material = new THREE.MeshStandardMaterial({
+            color: h.color,
+            side: THREE.DoubleSide,
+            roughness: 0.6,
+            metalness: 0.2
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.userData.originalColor = h.color;
+        mesh.userData.layerName = h.name;
+        modelGroup.add(mesh);
+
+        // Contour overlay
+        const cMesh = new THREE.Mesh(geometry, contourMaterial.clone());
+        cMesh.visible = false;
+        cMesh.renderOrder = 1;
+        cMesh.userData.isContour = true;
+        cMesh.userData.layerName = h.name;
+        modelGroup.add(cMesh);
+    });
+
+    // ── Fault meshes: fault-stick ribbon approach ──────────────────────────
+    // Geologists interpret faults as "sticks" — one vertical line per seismic
+    // section. The surface is built by connecting adjacent sticks with panels.
+    // We group points by their trace position (one stick per XL/IL column),
+    // sort each stick by real-world depth Z, then connect adjacent sticks with
+    // depth-matched triangle strips and per-strip local edge culling.
+    validFaults.forEach(f => {
+        const pts = f.pts;
+        if (!pts || pts.length === 0) return;
+
+        const uniqueILs = [...new Set(pts.map(p => p.il))].sort((a,b) => a-b);
+        const uniqueXLs = [...new Set(pts.map(p => p.xl))].sort((a,b) => a-b);
+
+        // The axis with more unique values is the "trace" direction
+        const traceVals = uniqueILs.length >= uniqueXLs.length ? uniqueILs : uniqueXLs;
+        const traceKey  = uniqueILs.length >= uniqueXLs.length ? 'il' : 'xl';
+        const traceW    = traceVals.length;
+
+        // Build sticks keyed by (il, xl) pair so that IL positions with multiple XL
+        // branches (like m_north) don't merge separate fence lines into one stick.
+        const stickMap = new Map();
+        pts.forEach(p => {
+            const key = `${p.il}_${p.xl}`;
+            if (!stickMap.has(key)) stickMap.set(key, []);
+            stickMap.get(key).push(p);
+        });
+        // Sort each stick by real-world depth Z (ascending)
+        stickMap.forEach(stick => stick.sort((a, b) => a.z - b.z));
+
+        // Build array of valid sticks (≥2 points)
+        const allSticks = [...stickMap.values()].filter(s => s.length >= 2);
+        if (allSticks.length < 2) {
+            const positions = new Float32Array(pts.length * 3);
+            pts.forEach((p, i) => {
+                positions[i*3]   = p.x - centerX;
+                positions[i*3+1] = -p.z;
+                positions[i*3+2] = -(p.y - centerY);
+            });
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const cloud = new THREE.Points(geo, new THREE.PointsMaterial({
+                color: f.color, size: 12, sizeAttenuation: true,
+                transparent: true, opacity: 0.8
+            }));
+            cloud.userData = { layerName: f.name, originalColor: f.color, isFault: true };
+            modelGroup.add(cloud);
+            return;
+        }
+
+        // Sort sticks spatially along the fault's principal XY direction.
+        // Compute each stick's centroid, find the dominant axis, then sort by projection.
+        const centroids = allSticks.map(s => ({
+            x: s.reduce((a, p) => a + p.x, 0) / s.length,
+            y: s.reduce((a, p) => a + p.y, 0) / s.length
+        }));
+        const cx = centroids.reduce((a, c) => a + c.x, 0) / centroids.length;
+        const cy = centroids.reduce((a, c) => a + c.y, 0) / centroids.length;
+        // PCA: pick the axis with the largest variance
+        const dxArr = centroids.map(c => c.x - cx);
+        const dyArr = centroids.map(c => c.y - cy);
+        const varX  = dxArr.reduce((a, d) => a + d*d, 0);
+        const varY  = dyArr.reduce((a, d) => a + d*d, 0);
+        // Sort by projection onto the dominant axis
+        // Douglas-Peucker simplification: collapse near-collinear K-layer points.
+        // epsilon=20m — well above the ~3m K-spacing but small vs 280m cross-stick width.
+        const STICK_EPS = 20;
+        const sortedSticks = allSticks
+            .map((s, i) => ({ s, proj: varX >= varY ? dxArr[i] : dyArr[i] }))
+            .sort((a, b) => a.proj - b.proj)
+            .map(o => simplifyStick(o.s, STICK_EPS))  // ← D-P: collapse near-collinear K points
+            .filter(s => s.length >= 2);               // need at least 2 pts after simplification
+
+
+
+
+        // Build all-in-one BufferGeometry from per-strip ribbon panels
+        const vertFloats = [];
+        const triIndices = [];
+        const validStripIndices = []; // indices into sortedSticks pairs that pass strip distance check
+        let vBase = 0;
+
+        // Pre-compute fault-wide global cross-stick median.
+        // Used to skip stray end-fray strips and cull individual long triangles.
+        const dist3 = (a, b) => Math.hypot(b.x-a.x, b.y-a.y, b.z-a.z);
+        const allCrossD = [];
+        for (let t = 0; t < sortedSticks.length - 1; t++) {
+            const sA = sortedSticks[t], sB = sortedSticks[t + 1];
+            if (!sA || !sB) continue;
+            const mn = Math.min(sA.length, sB.length);
+            for (let i = 0; i < mn; i++) allCrossD.push(dist3(sA[i], sB[i]));
+        }
+        allCrossD.sort((a, b) => a - b);
+        const globalCrossMedian = allCrossD[Math.floor(allCrossD.length * 0.5)] ?? 1e9;
+        const maxStripDist = globalCrossMedian * 2.0;  // skip whole strip if too wide
+        const maxTriEdge   = globalCrossMedian * 2.5;  // cull individual long triangles
+
+
+        for (let t = 0; t < sortedSticks.length - 1; t++) {
+            const sA = sortedSticks[t];
+            const sB = sortedSticks[t + 1];
+            if (!sA || !sB || sA.length < 2 || sB.length < 2) continue;
+
+            // Skip strip if median cross-stick distance exceeds the global reference
+            // (catches end-fray sticks that the spatial sort placed far from their true neighbours).
+            const minN = Math.min(sA.length, sB.length);
+            const stripCD = [];
+            for (let i = 0; i < minN; i++) stripCD.push(dist3(sA[i], sB[i]));
+            stripCD.sort((a, b) => a - b);
+            const stripMedian = stripCD[Math.floor(stripCD.length * 0.5)] ?? 1e9;
+            if (stripMedian > maxStripDist) continue;
+
+            const maxEdge = maxTriEdge;
+            validStripIndices.push(t); // track which strips make it into the vertex buffer
+
+
+            // Add vertex positions for this strip
+            const baseA = vBase;
+            sA.forEach(p => {
+                vertFloats.push(p.x - centerX, -p.z, -(p.y - centerY));
+                vBase++;
+            });
+            const baseB = vBase;
+            sB.forEach(p => {
+                vertFloats.push(p.x - centerX, -p.z, -(p.y - centerY));
+                vBase++;
+            });
+
+            // Zipper merge: advance through both sticks by depth, creating quads
+            // Each iteration: advance whichever stick's next point is shallower
+            // to keep the strip Z-monotone and avoid crossing triangles.
+            const nA = sA.length, nB = sB.length;
+            let ia = 0, ib = 0;
+            while (ia < nA - 1 || ib < nB - 1) {
+                const aHas = ia < nA - 1;
+                const bHas = ib < nB - 1;
+                let advA, advB;
+
+                if (aHas && bHas) {
+                    // Advance the stick whose NEXT point is shallower
+                    advA = sA[ia + 1].z <= sB[ib + 1].z;
+                    advB = !advA;
+                } else {
+                    advA = aHas;
+                    advB = bHas;
+                }
+
+                // Triangle winding: looking from outside (from sB toward sA), keep CCW.
+                // advance-A: sA moves deeper → (B_cur, A_cur, A_next) winds CCW from outside
+                // advance-B: sB moves deeper → (A_cur, B_next, B_cur) winds CCW from outside
+                if (advA) {
+                    const pA0 = sA[ia], pA1 = sA[ia + 1], pB0 = sB[ib];
+                    const maxE = Math.max(dist3(pA0, pA1), dist3(pA1, pB0), dist3(pA0, pB0));
+                    if (maxE <= maxEdge) triIndices.push(baseB+ib, baseA+ia, baseA+ia+1);
+                    ia++;
+                } else {
+                    const pA0 = sA[ia], pB0 = sB[ib], pB1 = sB[ib + 1];
+                    const maxE = Math.max(dist3(pA0, pB0), dist3(pB0, pB1), dist3(pA0, pB1));
+                    if (maxE <= maxEdge) triIndices.push(baseA+ia, baseB+ib+1, baseB+ib);
+                    ib++;
+                }
+            }
+        }
+
+        if (triIndices.length === 0) return;
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertFloats, 3));
+        geometry.setIndex(triIndices);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+
+        const material = new THREE.MeshPhongMaterial({
+            color: f.color,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.75,
+            shininess: 10,       // low specular — avoids glare on near-planar surfaces
+            specular: 0x222222,
+            flatShading: params.flatShading  // respect the Sharp/Flat toggle state
+        });
+
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.userData.originalColor = f.color;
+        mesh.userData.layerName = f.name;
+        mesh.userData.isFault = true;
+        // Store canonical (pre-smooth) sticks for centroid-path smoothing
+        mesh.userData.canonicalSticks = sortedSticks.map(s => s.map(p => ({...p})));
+        mesh.userData.validStripIndices = validStripIndices;
+        mesh.userData.centerX = centerX;
+        mesh.userData.centerY = centerY;
+        modelGroup.add(mesh);
+
+    });
+
+
+    // Tag fault result objects so initLayerControls can detect them
+    validFaults.forEach(f => { f.isFault = true; });
+
+    // ── Camera and lighting ──────────────────────────────────
+    const box = new THREE.Box3().setFromObject(modelGroup);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+
+    if (mainLight) scene.remove(mainLight);
+    mainLight = new THREE.DirectionalLight(0xffffff, 1.15);
+    mainLight.position.set(center.x, center.y + Math.max(size.x, size.z) * 2, center.z);
+    mainLight.target.position.copy(center);
+    scene.add(mainLight);
+    scene.add(mainLight.target);
+
+    const viewVector = new THREE.Vector3(-1427.66, 2580.91, -5574.77).normalize();
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const viewDistance = Math.max(maxDim * 1.5, 4000);
+    controls.target.copy(center).add(new THREE.Vector3(0, -maxDim * 0.2, 0));
+    camera.position.copy(controls.target.clone().add(viewVector.multiplyScalar(viewDistance)));
+    camera.near = 10;
+    camera.far = viewDistance * 20;
+    camera.updateProjectionMatrix();
+
+    // ── Layer controls ───────────────────────────────────────
+    const allLayers = [...validHorizons, ...validFaults];
+    initLayerControls(allLayers);
+    applyFaultSmoothing(params.faultSmoothIterations); // apply initial smoothing
+
+    // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
+    // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
+    applyState(getCurrentState());
+
+    hideLoading();
+
+}
+
+// ─────────────────────────────────────────────────────────────
+// SCENE MANAGEMENT
+// ─────────────────────────────────────────────────────────────
+
+function clearScene() {
+    // Dispose all GPU resources
+    while (modelGroup.children.length > 0) {
+        const obj = modelGroup.children[0];
+        modelGroup.remove(obj);
+        obj.geometry?.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+        else obj.material?.dispose();
+    }
+    // Rebuild the Layers folder so only new-field layers appear
+    layerFolder.destroy();
+    layerFolder = gui.addFolder('Layers');
+}
+
+async function loadDataset(datasetName) {
+    updateLoading('Switching dataset...');
+    clearScene();
+    controls.target.set(0, 0, 0);
+    camera.position.set(2000, 2000, 2000);
+
+    // Keep the dropdown in sync and persist the choice
+    document.getElementById('dataset-select').value = datasetName;
+    localStorage.setItem('geo_active_field', datasetName);
+
+    if (datasetName === 'volve') {
+        await initVolveData();
+    } else if (datasetName === 'norne') {
+        await initNorneData();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// DATASET DROPDOWN
+// ─────────────────────────────────────────────────────────────
+document.getElementById('dataset-select').addEventListener('change', e => {
+    loadDataset(e.target.value);
+});
+
+// ─────────────────────────────────────────────────────────────
+// ANIMATE
+// ─────────────────────────────────────────────────────────────
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
 }
 
-// Handle Resize
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Start
-initVolveData();
+// Boot — restore last selected field (default to volve)
+const savedField = localStorage.getItem('geo_active_field') || 'volve';
+document.getElementById('dataset-select').value = savedField;
+loadDataset(savedField);
 animate();
