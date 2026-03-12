@@ -761,7 +761,10 @@ const _paramsDefaults = {
     subregionD: 2500,          // box N-S depth (m)
     useVolveTexture: true,     // use real Volve BCU residual instead of synthetic fBm
     faultColorMode: 'original',// 'original' | 'uniform' | 'warm' | 'cool' | 'earth' | 'mono'
-    faultSingleColor: '#aaaaaa'
+    faultSingleColor: '#aaaaaa',
+    regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
+    regionalWireframe: false,  // wireframe overlay for regional surface
+    regionalBlendKm: 8         // km beyond survey edge over which to blend conform→poly
 };
 
 // Merge any previously saved values over the defaults
@@ -1319,6 +1322,109 @@ const FAULT_PALETTES = {
     mono:    [0x888888, 0xAAAAAA, 0x666666, 0xCCCCCC, 0x555555, 0x999999, 0xBBBBBB, 0x444444],
 };
 
+// ── Regional Åre Fm context horizon ──────────────────────────────────────────
+let regionalMesh = null;
+
+async function loadRegionalHorizon() {
+    let centerX = 0, centerY = 0;
+    modelGroup.children.forEach(m => {
+        if (m.userData.isHorizon && m.userData.centerX) { centerX = m.userData.centerX; centerY = m.userData.centerY; }
+    });
+
+    let text;
+    try { const r = await fetch('Norne_Are_Regional.csv'); if (!r.ok) return null; text = await r.text(); }
+    catch(e) { console.warn('Regional horizon CSV not found'); return null; }
+
+    const lines = text.trim().split('\n');
+    const W = 51, H = 51;
+    const N = W * H;
+    // Per-vertex storage
+    const rxArr   = new Float32Array(N); // scene X
+    const rzArr   = new Float32Array(N); // scene Z
+    const zConform = new Float32Array(N);
+    const zPoly    = new Float32Array(N);
+    const distArr  = new Float32Array(N);
+
+    lines.slice(1).forEach(l => {
+        const p = l.split(',');
+        const il = parseInt(p[0]), xl = parseInt(p[1]);
+        const idx = xl * W + il;
+        rxArr[idx]    = parseFloat(p[2]) - centerX;
+        rzArr[idx]    = -(parseFloat(p[3]) - centerY);
+        zConform[idx] = parseFloat(p[4]);
+        zPoly[idx]    = parseFloat(p[5]);
+        distArr[idx]  = parseFloat(p[6]);
+    });
+
+    const geo = new THREE.PlaneGeometry(1, 1, W - 1, H - 1);
+    const pos = geo.attributes.position;
+
+    // Initial blend
+    const blendM = params.regionalBlendKm * 1000;
+    for (let i = 0; i < N; i++) {
+        let t = distArr[i] / (blendM || 1);
+        t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
+        const z = -(1 - t) * zConform[i] - t * zPoly[i];
+        pos.setXYZ(i, rxArr[i], z, rzArr[i]);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    // Alpha gradient
+    const cvs = document.createElement('canvas'); cvs.width = cvs.height = 512;
+    const ctx = cvs.getContext('2d');
+    const g = ctx.createRadialGradient(256, 256, 40, 256, 256, 256);
+    g.addColorStop(0.0,  'rgba(255,255,255,1)');
+    g.addColorStop(0.28, 'rgba(255,255,255,1)');
+    g.addColorStop(0.75, 'rgba(255,255,255,0.4)');
+    g.addColorStop(1.0,  'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
+    const alphaMap = new THREE.CanvasTexture(cvs);
+
+    const mat = new THREE.MeshStandardMaterial({
+        color: 0x7799BB, transparent: true, opacity: params.regionalOpacity,
+        alphaMap, depthWrite: false, side: THREE.DoubleSide,
+        roughness: 0.85, metalness: 0.05, wireframe: params.regionalWireframe
+    });
+
+    regionalMesh = new THREE.Mesh(geo, mat);
+    regionalMesh.userData.isRegional = true;
+    regionalMesh.userData.layerName = 'Åre Fm (Regional)';
+    regionalMesh.userData.rxArr    = rxArr;
+    regionalMesh.userData.rzArr    = rzArr;
+    regionalMesh.userData.zConform = zConform;
+    regionalMesh.userData.zPoly    = zPoly;
+    regionalMesh.userData.distArr  = distArr;
+    modelGroup.add(regionalMesh);
+
+    if (camera) { camera.far = Math.max(camera.far, 200000); camera.updateProjectionMatrix(); }
+    console.log('Regional Åre Fm horizon loaded');
+    return regionalMesh;
+}
+
+// Recompute the smoothstep blend on the already-loaded regional mesh.
+// blendKm: distance (km) beyond the survey edge over which to blend conform→poly.
+//   0  = sharp cutoff at survey boundary (conformed inside, poly outside)
+//   25 = blend extends all the way to the 25km edge of the regional surface
+function applyRegionalBlend(blendKm) {
+    if (!regionalMesh) { console.warn('applyRegionalBlend: no regionalMesh'); return; }
+    if (!regionalMesh.userData.zConform) { console.warn('applyRegionalBlend: no userData.zConform'); return; }
+    const { rxArr, rzArr, zConform, zPoly, distArr } = regionalMesh.userData;
+    const pos = regionalMesh.geometry.attributes.position;
+    const blendM = Math.max(blendKm * 1000, 1);
+    // Sample vertex 100 for debug (should be in outer region)
+    const dSample = distArr[100], tSample = Math.min(dSample/blendM,1); const tS = tSample*tSample*(3-2*tSample);
+    console.log(`regionalBlend blendKm=${blendKm} blendM=${blendM} sample[100]: dist=${dSample.toFixed(0)}m t=${tS.toFixed(3)} zC=${zConform[100].toFixed(0)} zP=${zPoly[100].toFixed(0)} → y=${(-((1-tS)*zConform[100]+tS*zPoly[100])).toFixed(0)}`);
+    for (let i = 0; i < pos.count; i++) {
+        let t = distArr[i] / blendM;
+        t = Math.min(t, 1); t = t * t * (3 - 2 * t);
+        pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]), rzArr[i]);
+    }
+    pos.needsUpdate = true;
+    regionalMesh.geometry.computeVertexNormals();
+}
+
+
 function applyFaultColoring() {
     const mode = params.faultColorMode;
     let faultIndex = 0;
@@ -1343,7 +1449,7 @@ function updateColoring() {
         // Calculate depth bounds from horizons only (faults excluded)
         let minZ = Infinity, maxZ = -Infinity;
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault) return; // skip faults
+            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional) return;
             const pos = mesh.geometry.attributes.position;
             for (let i = 0; i < pos.count; i++) {
                 const y = pos.getY(i);
@@ -1356,7 +1462,7 @@ function updateColoring() {
 
         // Apply depth vertex colours to horizons
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault) return; // skip faults
+            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional) return;
             const geometry = mesh.geometry;
             const count = geometry.attributes.position.count;
             const colors = new Float32Array(count * 3);
@@ -1454,7 +1560,21 @@ topoFolder.addColor(params, 'contourColor').name('Color').onChange((v) => {
     });
 });
 
+// Regional Context folder
+const regionalFolder = vizFolder.addFolder('Regional Context (Åre Fm)');
+regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
+    if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
+});
+regionalFolder.add(params, 'regionalBlendKm', 0, 25, 0.5).name('Blend Distance (km)').onChange(v => {
+    applyRegionalBlend(v);
+});
+regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
+    if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
+});
+regionalFolder.close();
+
 const textureFolder = vizFolder.addFolder('HD Survey Subregion');
+
 
 textureFolder.add(params, 'subregionEnabled').name('Enable Box').onChange(v => {
     rebuildSubregionBox();
@@ -1938,8 +2058,9 @@ async function initNorneData() {
     // ── Layer controls ───────────────────────────────────────
     const allLayers = [...validHorizons, ...validFaults];
     initLayerControls(allLayers);
-    applyFaultSmoothing(params.faultSmoothIterations); // apply initial fault smoothing
+    applyFaultSmoothing(params.faultSmoothIterations);
     if (params.horizonTextureAmp > 0) applyHorizonTexture(params.horizonTextureAmp);
+    loadRegionalHorizon(); // async — adds ghost surface once CSV loads
 
 
     // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
