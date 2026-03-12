@@ -498,7 +498,13 @@ async function initVolveData() {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.originalColor = h.color; // Save for toggling
         mesh.userData.layerName = h.name; // Store for layer controls
+        mesh.userData.isHorizon = true;
+        mesh.userData.centerX = centerX;
+        mesh.userData.centerY = centerY;
+        // Cache raw (unperturbed) vertex positions for the texture slider
+        mesh.userData.rawHorizonPos = Float32Array.from(geometry.attributes.position.array);
         modelGroup.add(mesh);
+
 
         // Create Contour Overlay
         const cMesh = new THREE.Mesh(geometry, contourMaterial.clone());
@@ -584,20 +590,12 @@ async function initVolveData() {
 const uiStyles = document.createElement('style');
 uiStyles.textContent = `
     .preset-bar {
-        position: absolute;
-        bottom: 20px;
-        right: 20px; /* Aligned with GUI usually on right */
-        background: #1a1a1a;
-        padding: 10px;
-        border-radius: 6px;
         display: flex;
         gap: 8px;
         align-items: center;
         color: #eee;
         font-family: sans-serif;
         font-size: 13px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        z-index: 1001;
     }
     .preset-select {
         background: #333;
@@ -721,6 +719,15 @@ uiContainer.innerHTML = `
     </div>
 `;
 document.body.appendChild(uiContainer);
+// Move preset bar inline with the field picker
+const _presetBar = uiContainer.querySelector('.preset-bar');
+if (_presetBar) {
+    const _datasetSel = document.getElementById('dataset-selector');
+    if (_datasetSel) {
+        _datasetSel.style.cssText += ';display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px;';
+        _datasetSel.appendChild(_presetBar);
+    }
+}
 
 window.closeModal = (id) => {
     document.getElementById(id).style.display = 'none';
@@ -745,7 +752,16 @@ const _paramsDefaults = {
     sunIntensity: 0.0,
     headlampIntensity: 0.39,
     hemiIntensity: 1.62,
-    lightingEnabled: true
+    lightingEnabled: true,
+    horizonTextureAmp: 0,      // 0 = smooth, 10 = full geological texture
+    subregionEnabled: false,   // show HD survey subregion box
+    subregionX: 0,             // scene X centre of box (metres from field centre)
+    subregionZ: 0,             // scene Z centre of box
+    subregionW: 1000,          // box E-W width (m)
+    subregionD: 2500,          // box N-S depth (m)
+    useVolveTexture: true,     // use real Volve BCU residual instead of synthetic fBm
+    faultColorMode: 'original',// 'original' | 'uniform' | 'warm' | 'cool' | 'earth' | 'mono'
+    faultSingleColor: '#aaaaaa'
 };
 
 // Merge any previously saved values over the defaults
@@ -774,6 +790,156 @@ let savedPresets = {
 
 // Create Layer Controls dynamically
 let layerFolder = gui.addFolder('Layers');
+
+// ── Horizon texture (fBm noise displacement) ─────────────────────────────────
+// Simple 3-octave value noise applied as a Y-axis (depth) displacement.
+// Noise is deterministic (seed via sine hash) so it's consistent on reload.
+function _hash2(x, y) {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+}
+function _smoothNoise2(x, y) {
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const fx = x - ix, fy = y - iy;
+    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+    const a = _hash2(ix,   iy),   b = _hash2(ix+1, iy);
+    const c = _hash2(ix,   iy+1), d = _hash2(ix+1, iy+1);
+    return a + (b-a)*ux + (c-a)*uy + (b-a+d-c-b+a)*ux*uy - 0.5; // centre on 0
+}
+function _fbm2(wx, wy) {
+    // Three octaves: large compaction drape, medium bedform, fine fabric
+    //   octave 1: 800m wavelength, amplitude scale=1.0
+    //   octave 2: 200m wavelength, amplitude scale=0.4
+    //   octave 3: 50m  wavelength, amplitude scale=0.15
+    const OCTAVES = [[1/800, 1.0], [1/200, 0.4], [1/50, 0.15]];
+    let v = 0;
+    for (const [freq, amp] of OCTAVES) v += _smoothNoise2(wx*freq, wy*freq) * amp;
+    return v; // range roughly ±0.77
+}
+
+// HD survey subregion: white wireframe box + fBm noise only inside footprint.
+// ── Volve BCU real-data texture ──────────────────────────────────────────────
+// Loaded once at startup; null while loading or if file absent.
+let volveTexture = null;
+(async () => {
+    try {
+        const r = await fetch('volve_bcu_texture.json');
+        if (r.ok) {
+            volveTexture = await r.json();
+            console.log('Volve texture loaded:', volveTexture.rows, '×', volveTexture.cols);
+            // Re-apply texture now that real data is available
+            if (params.useVolveTexture && params.subregionEnabled && params.horizonTextureAmp > 0) {
+                applyHorizonTexture(params.horizonTextureAmp);
+                updateColoring();
+            }
+        }
+    } catch(e) { console.warn('Volve texture unavailable, using fBm fallback'); }
+})();
+
+// Bilinear sample from the Volve texture, tiling in both axes.
+function _sampleVolveTexture(u, v) {
+    if (!volveTexture) return 0;
+    const rows = volveTexture.rows, cols = volveTexture.cols, data = volveTexture.data;
+    u = ((u % 1) + 1) % 1;
+    v = ((v % 1) + 1) % 1;
+    const x = u * (cols - 1), y = v * (rows - 1);
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const fx = x - ix, fy = y - iy;
+    const r0 = data[iy], r1 = data[Math.min(iy+1, rows-1)];
+    const c1 = Math.min(ix+1, cols-1);
+    return r0[ix]*(1-fx)*(1-fy) + r0[c1]*fx*(1-fy) + r1[ix]*(1-fx)*fy + r1[c1]*fx*fy;
+}
+
+let subregionBox = null; // THREE.LineSegments for the white bounding box
+
+
+function rebuildSubregionBox() {
+    if (subregionBox) { scene.remove(subregionBox); subregionBox.geometry.dispose(); subregionBox = null; }
+    if (!params.subregionEnabled) return;
+
+    // Compute Y extent from all horizon raw positions
+    let minY = Infinity, maxY = -Infinity;
+    modelGroup.children.forEach(m => {
+        if (!m.userData.isHorizon || !m.userData.rawHorizonPos) return;
+        const raw = m.userData.rawHorizonPos;
+        for (let i = 1; i < raw.length; i += 3) { if (raw[i] < minY) minY = raw[i]; if (raw[i] > maxY) maxY = raw[i]; }
+    });
+    const boxH = (maxY - minY) || 400;
+    const midY = (minY + maxY) / 2;
+
+    const W = params.subregionW, D = params.subregionD;
+    const bGeo = new THREE.BoxGeometry(W, boxH, D);
+    const edges = new THREE.EdgesGeometry(bGeo);
+    subregionBox = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
+    subregionBox.position.set(
+        params.subregionX,
+        midY * params.zScale,     // match zScale of modelGroup
+        params.subregionZ
+    );
+    scene.add(subregionBox);
+}
+
+// Apply fBm displacement inside the subregion footprint; reset outside.
+function applyHorizonTexture(amp) {
+    const enabled  = params.subregionEnabled;
+    const sX = params.subregionX, sZ = params.subregionZ;
+    const halfW = params.subregionW / 2, halfD = params.subregionD / 2;
+    // Noise amplitude: 20m at amp=10 (visible when zoomed into 1km box)
+    const maxAmp = (amp / 10) * 20.0;
+
+    modelGroup.children.forEach(mesh => {
+        if (!mesh.userData.isHorizon || !mesh.userData.rawHorizonPos) return;
+        if (!(mesh instanceof THREE.Mesh)) return;
+        const pos = mesh.geometry.attributes.position;
+        const raw = mesh.userData.rawHorizonPos;
+        const cX = mesh.userData.centerX || 0, cY = mesh.userData.centerY || 0;
+
+        for (let i = 0; i < pos.count; i++) {
+            const rx = raw[i * 3], ry = raw[i * 3 + 1], rz = raw[i * 3 + 2];
+            // Always reset to raw first
+            pos.setXYZ(i, rx, ry, rz);
+            if (amp === 0 || !enabled) continue;
+
+            // Is this vertex inside the subregion footprint (XZ plane)?
+            const px = rx, pz = rz; // scene coords (already centred)
+            if (Math.abs(px - sX) > halfW || Math.abs(pz - sZ) > halfD) continue;
+
+            let noise;
+            if (params.useVolveTexture && volveTexture) {
+                // Physical-scale sampling: 1m in box == 1m in texture.
+                // Texture covers: rows×dx_il metres (IL / E-W) × cols×dx_xl metres (XL / N-S)
+                const texW = volveTexture.rows * volveTexture.dx_il;  // ≈ 1000 m
+                const texD = volveTexture.cols * volveTexture.dx_xl;  // ≈ 2500 m
+                // Offset from box centre → normalised texture coordinate (tiles if box > texture)
+                const u = (px - sX) / texW + 0.5;
+                const v = (pz - sZ) / texD + 0.5;
+                // Sample: u addresses rows (IL/1000m), v addresses cols (XL/2500m)
+                const rawVal = _sampleVolveTexture(v, u); // note: sampler is (u→cols, v→rows), swap
+                const range = (volveTexture.p95 - volveTexture.p5) / 2 || 1;
+                noise = rawVal / range;
+
+            } else {
+                // Fall back to synthetic fBm
+                const wx = rx + cX, wz = -(rz) + cY;
+                noise = _fbm2(wx * 0.001, wz * 0.001);
+            }
+            pos.setY(i, ry + noise * maxAmp);
+        }
+        pos.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+    });
+    // Keep box position in sync with zScale
+    if (subregionBox) {
+        let minY = Infinity, maxY = -Infinity;
+        modelGroup.children.forEach(m => {
+            if (!m.userData.isHorizon || !m.userData.rawHorizonPos) return;
+            const raw = m.userData.rawHorizonPos;
+            for (let i = 1; i < raw.length; i += 3) { if (raw[i] < minY) minY = raw[i]; if (raw[i] > maxY) maxY = raw[i]; }
+        });
+        subregionBox.position.y = ((minY + maxY) / 2) * params.zScale;
+    }
+}
+
 
 // ── Douglas-Peucker 3D stick simplification ──────────────────────────────────
 // Removes near-collinear intermediate points from each fault stick polyline.
@@ -949,6 +1115,24 @@ function initLayerControls(layers) {
         faultFolder.add(params, 'faultSmoothIterations', 0, 8, 1)
             .name('Smoothing (iterations)')
             .onChange(v => { applyFaultSmoothing(v); updateColoring(); });
+
+        // ── Fault Coloring ────────────────────────────────────────────────────
+        const faultColorFolder = faultFolder.addFolder('Fault Coloring');
+        const colorPickerCtrl = faultColorFolder.addColor(params, 'faultSingleColor')
+            .name('Color').onChange(() => applyFaultColoring());
+        faultColorFolder.add(params, 'faultColorMode', {
+            'Original (per-fault)': 'original',
+            'Uniform':              'uniform',
+            'Warm spectrum':        'warm',
+            'Cool spectrum':        'cool',
+            'Earth tones':          'earth',
+            'Monochrome':           'mono',
+        }).name('Palette').onChange(v => {
+            v === 'uniform' ? colorPickerCtrl.show() : colorPickerCtrl.hide();
+            applyFaultColoring();
+        });
+        // Hide the color picker unless starting in uniform mode
+        if (params.faultColorMode !== 'uniform') colorPickerCtrl.hide();
     }
 }
 
@@ -1036,6 +1220,16 @@ function applyState(state) {
         c.material.needsUpdate = true;
     });
     modelGroup.scale.y = params.zScale;
+
+    // HD Survey Subregion — rebuild box and reapply texture displacement
+    rebuildSubregionBox();
+    if (params.horizonTextureAmp > 0 || params.subregionEnabled) {
+        applyHorizonTexture(params.horizonTextureAmp);
+    }
+    // Also sync zScale on the box if it exists
+    if (subregionBox) subregionBox.position.y = subregionBox.position.y; // noop refresh handled inside rebuildSubregionBox
+    // Fault palette
+    applyFaultColoring();
 }
 
 // --- Custom UI Logic ---
@@ -1115,69 +1309,82 @@ function initPresets() {
     });
 }
 
+// ── Fault colour palettes ────────────────────────────────────────────────────
+const FAULT_PALETTES = {
+    original:    null, // use each fault's originalColor
+    uniform:     null, // use params.faultSingleColor for all
+    warm:    [0xFF6B6B, 0xFF8C42, 0xFFAA22, 0xFFCC44, 0xFF5577, 0xFF7733, 0xEE4444, 0xFF9900],
+    cool:    [0x4ECDC4, 0x45B7D1, 0x5C9EDA, 0x7B68EE, 0x48A999, 0x2980B9, 0x8E44AD, 0x3498DB],
+    earth:   [0xA0845C, 0xC49A6C, 0x8B6914, 0xD2A679, 0xB87333, 0x967117, 0xCC9944, 0x7D5A3C],
+    mono:    [0x888888, 0xAAAAAA, 0x666666, 0xCCCCCC, 0x555555, 0x999999, 0xBBBBBB, 0x444444],
+};
+
+function applyFaultColoring() {
+    const mode = params.faultColorMode;
+    let faultIndex = 0;
+    modelGroup.children.forEach(mesh => {
+        if (!mesh.userData.isFault || mesh.userData.isContour) return;
+        mesh.material.vertexColors = false;
+        if (mode === 'uniform') {
+            mesh.material.color.set(params.faultSingleColor);
+        } else if (mode === 'original') {
+            if (mesh.userData.originalColor !== undefined) mesh.material.color.setHex(mesh.userData.originalColor);
+        } else {
+            const palette = FAULT_PALETTES[mode];
+            if (palette) mesh.material.color.setHex(palette[faultIndex % palette.length]);
+        }
+        mesh.material.needsUpdate = true;
+        faultIndex++;
+    });
+}
+
 function updateColoring() {
     if (params.colorByDepth) {
-        // Calculate bounds
+        // Calculate depth bounds from horizons only (faults excluded)
         let minZ = Infinity, maxZ = -Infinity;
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour) return; // Skip contours
+            if (mesh.userData.isContour || mesh.userData.isFault) return; // skip faults
             const pos = mesh.geometry.attributes.position;
             for (let i = 0; i < pos.count; i++) {
-                // Remember Y in Three is -Z in Geo (Depth)
-                // So lower Y is deeper.
-                // We want deeper (lower Y) to be start of ramp?
-                // Standard: Low Value (Deep/Blue) -> High Value (Shallow/Red)
-                // BUT in depth map: Depth is usually positive downwards.
-                // So Deep = Large Value. Shallow = Small Value.
-                // Let's stick to Y: Min Y (deepest) to Max Y (shallowest)
                 const y = pos.getY(i);
-                if (!isNaN(y) && y !== 0) { // check for holes (0 or NaN)
+                if (!isNaN(y) && y !== 0) {
                     if (y < minZ) minZ = y;
                     if (y > maxZ) maxZ = y;
                 }
             }
         });
 
-        // Apply vertex colors
+        // Apply depth vertex colours to horizons
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour) return;
-
+            if (mesh.userData.isContour || mesh.userData.isFault) return; // skip faults
             const geometry = mesh.geometry;
             const count = geometry.attributes.position.count;
             const colors = new Float32Array(count * 3);
             const pos = geometry.attributes.position;
-
             for (let i = 0; i < count; i++) {
                 const y = pos.getY(i);
-                // Normalize 0..1
-                // t=0 at minZ (deep), t=1 at maxZ (shallow)
                 const t = (y - minZ) / (maxZ - minZ);
-
                 const color = getColormapColor(params.selectedColormap, t);
-
-                colors[i * 3] = color.r;
-                colors[i * 3 + 1] = color.g;
-                colors[i * 3 + 2] = color.b;
+                colors[i * 3] = color.r; colors[i * 3 + 1] = color.g; colors[i * 3 + 2] = color.b;
             }
-
             geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
             mesh.material.vertexColors = true;
-            mesh.material.color.set(0xffffff); // Reset base color
+            mesh.material.color.set(0xffffff);
             mesh.material.needsUpdate = true;
         });
     } else {
-        // Revert to original layer colors
+        // Revert horizons to original colours
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour) return;
-
+            if (mesh.userData.isContour || mesh.userData.isFault) return;
             mesh.material.vertexColors = false;
-            if (mesh.userData.originalColor) {
-                mesh.material.color.setHex(mesh.userData.originalColor);
-            }
+            if (mesh.userData.originalColor) mesh.material.color.setHex(mesh.userData.originalColor);
             mesh.material.needsUpdate = true;
         });
     }
+    // Always (re-)apply fault palette — faults are never depth-coloured
+    applyFaultColoring();
 }
+
 
 const vizFolder = gui.addFolder('Visualization');
 
@@ -1246,6 +1453,37 @@ topoFolder.addColor(params, 'contourColor').name('Color').onChange((v) => {
         }
     });
 });
+
+const textureFolder = vizFolder.addFolder('HD Survey Subregion');
+
+textureFolder.add(params, 'subregionEnabled').name('Enable Box').onChange(v => {
+    rebuildSubregionBox();
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+textureFolder.add(params, 'subregionX', -6000, 6000, 10).name('Position E-W (m)').onChange(v => {
+    if (subregionBox) subregionBox.position.x = v;
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+textureFolder.add(params, 'subregionZ', -7000, 7000, 10).name('Position N-S (m)').onChange(v => {
+    if (subregionBox) subregionBox.position.z = v;
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+textureFolder.add(params, 'useVolveTexture').name('Use Volve Texture').onChange(() => {
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+textureFolder.add(params, 'horizonTextureAmp', 0, 10, 0.1).name('Texture Amplitude').onChange(v => {
+    applyHorizonTexture(v);
+    updateColoring();
+});
+
 
 gui.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
     modelGroup.scale.y = v;
@@ -1357,14 +1595,15 @@ async function initNorneData() {
 
     const [horizonResults, faultResults] = await Promise.all([
         Promise.all([
-            loadHorizon('Åre Fm Top',   'Norne_Are_Top.csv',   0xFF6B6B),  // K=0  warm red
-            loadHorizon('Tilje Fm Top', 'Norne_Tilje_Top.csv', 0xFFAA44),  // K=3  orange
-            loadHorizon('Ile Fm Top',   'Norne_Ile_Top.csv',   0xFFDD22),  // K=6  yellow
-            loadHorizon('Tofte Fm Top', 'Norne_Tofte_Top.csv', 0x66CC66),  // K=12 green
-            loadHorizon('Garn Fm Top',  'Norne_Garn_Top.csv',  0x4ECDC4),  // K=16 teal
-            loadHorizon('Not Fm Top',   'Norne_Not_Top.csv',   0x45B7D1),  // K=19 blue
-            loadHorizon('Norne Base',   'Norne_Base.csv',      0x9B59B6)   // K=21 purple
+            loadHorizon('Åre Fm Top',   'Norne_Are_Top_hires.csv',   0xFF6B6B),
+            loadHorizon('Tilje Fm Top', 'Norne_Tilje_Top_hires.csv', 0xFFAA44),
+            loadHorizon('Ile Fm Top',   'Norne_Ile_Top_hires.csv',   0xFFDD22),
+            loadHorizon('Tofte Fm Top', 'Norne_Tofte_Top_hires.csv', 0x66CC66),
+            loadHorizon('Garn Fm Top',  'Norne_Garn_Top_hires.csv',  0x4ECDC4),
+            loadHorizon('Not Fm Top',   'Norne_Not_Top_hires.csv',   0x45B7D1),
+            loadHorizon('Norne Base',   'Norne_Base_hires.csv',      0x9B59B6)
         ]),
+
 
         Promise.all(faultDefs.map(fd => loadFault(fd.name, fd.file, fd.color)))
     ]);
@@ -1460,7 +1699,12 @@ async function initNorneData() {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.originalColor = h.color;
         mesh.userData.layerName = h.name;
+        mesh.userData.isHorizon = true;
+        mesh.userData.centerX = centerX;
+        mesh.userData.centerY = centerY;
+        mesh.userData.rawHorizonPos = Float32Array.from(geometry.attributes.position.array);
         modelGroup.add(mesh);
+
 
         // Contour overlay
         const cMesh = new THREE.Mesh(geometry, contourMaterial.clone());
@@ -1694,7 +1938,9 @@ async function initNorneData() {
     // ── Layer controls ───────────────────────────────────────
     const allLayers = [...validHorizons, ...validFaults];
     initLayerControls(allLayers);
-    applyFaultSmoothing(params.faultSmoothIterations); // apply initial smoothing
+    applyFaultSmoothing(params.faultSmoothIterations); // apply initial fault smoothing
+    if (params.horizonTextureAmp > 0) applyHorizonTexture(params.horizonTextureAmp);
+
 
     // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
     // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
