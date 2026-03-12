@@ -566,20 +566,10 @@ async function initVolveData() {
     // Initialize Layer Controls
     initLayerControls(validHorizons);
 
-    // Apply Visualization Defaults
-    updateColoring(); // Apply depth coloring if enabled
-
-    // Apply contour defaults
-    modelGroup.children.forEach(c => {
-        if (c.userData.isContour) {
-            // Respect layer visibility!
-            c.visible = params.showContours && c.userData.layerVisible;
-            c.material.uniforms.interval.value = params.contourInterval;
-            c.material.uniforms.thickness.value = params.contourThickness;
-            c.material.uniforms.opacity.value = params.contourOpacity;
-            c.material.uniforms.lineColor.value.set(params.contourColor);
-        }
-    });
+    // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
+    // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
+    // This is the canonical "restore from localStorage" step — do not remove.
+    applyState(getCurrentState());
 
     // Initialize Presets (Capture Default)
     initPresets();
@@ -760,6 +750,17 @@ function _trackFolder(folder, name) {
     });
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  DEVELOPER RULE — ADDING A NEW CONTROL PANEL PARAMETER                  ║
+// ║                                                                          ║
+// ║  ① Add it to _paramsDefaults below with a sensible starting value.       ║
+// ║     The params Proxy will auto-save every write to localStorage.         ║
+// ║                                                                          ║
+// ║  ② Add a matching GUI control (gui.add / addColor / addFolder etc.)      ║
+// ║     so the restored value is VISIBLE and EDITABLE after a browser        ║
+// ║     refresh. Skipping ② means the value silently retains its last-saved  ║
+// ║     value with no way for the user to see or change it.                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
 const _paramsDefaults = {
     wireframe: false,
     flatShading: false,
@@ -794,7 +795,12 @@ const _paramsDefaults = {
     regionalContourThickness: 1.2,
     regionalContourOpacity: 0.4,
     regionalContourColor: '#7799BB',  // matches regional mesh body color
-    regionalContourSmooth: 0          // Laplacian smoothing iterations (0 = off)
+    regionalContourSmooth: 0,         // Laplacian smoothing iterations (0 = off)
+    // ── Horizon footprint bounding box ───────────────────────────────────────
+    horizonBBoxVisible: false,         // show auto-fitted horizon footprint box
+    horizonBBoxColor: '#ffffff',       // wireframe colour
+    // ── Per-horizon depth exaggeration ───────────────────────────────────────
+    horizonDepthExag: 1.0,             // 1 = true scale; >1 spreads layers apart
 };
 
 // Merge any previously saved values over the defaults
@@ -824,6 +830,7 @@ let savedPresets = {
 // ── Top-level panel sections for horizons and faults ─────────────────────────
 let horizonFolder = gui.addFolder('Horizons');
 _trackFolder(horizonFolder, 'Horizons');
+addHorizonPanelControls();
 
 let faultFolder = gui.addFolder('Faults');
 _trackFolder(faultFolder, 'Faults');
@@ -889,6 +896,157 @@ function _sampleVolveTexture(u, v) {
 }
 
 let subregionBox = null; // THREE.LineSegments for the white bounding box
+let horizonBBox = null;  // THREE.LineSegments auto-fitted to horizon footprint
+
+// Build (or rebuild) an Oriented Bounding Box fitted to the horizon survey footprint.
+// Uses PCA on the XZ vertex cloud to find the dominant survey strike direction,
+// then rotates a box to match it snugly.
+// Height: bottom = deepest horizon vertex, top = y=0 (sea surface / datum),
+//         so the box represents the full column from surface to deepest horizon.
+// Lives in modelGroup so it automatically scales with zScale.
+function buildHorizonBBox() {
+    if (horizonBBox) {
+        modelGroup.remove(horizonBBox);
+        horizonBBox.geometry.dispose();
+        horizonBBox.material.dispose();
+        horizonBBox = null;
+    }
+
+    // ── Step 1: Collect XZ footprint positions (sample every 4th vertex for speed) ──
+    const xzPts = []; // { x, z }
+    let minY = Infinity;
+    modelGroup.children.forEach(m => {
+        if (!m.userData.isHorizon || m.userData.isContour) return;
+        if (!(m instanceof THREE.Mesh)) return;
+        const pos = m.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i += 4) {
+            const y = pos.getY(i);
+            if (y === 0) continue; // skip invalid (hole-fill) vertices
+            xzPts.push({ x: pos.getX(i), z: pos.getZ(i) });
+            if (y < minY) minY = y;
+        }
+    });
+    if (xzPts.length < 3 || !isFinite(minY)) return;
+
+    // ── Step 2: PCA on XZ to find the survey's dominant strike axis ──────────────
+    const cx = xzPts.reduce((s, p) => s + p.x, 0) / xzPts.length;
+    const cz = xzPts.reduce((s, p) => s + p.z, 0) / xzPts.length;
+
+    let Cxx = 0, Cxz = 0, Czz = 0;
+    for (const p of xzPts) {
+        const dx = p.x - cx, dz = p.z - cz;
+        Cxx += dx * dx; Cxz += dx * dz; Czz += dz * dz;
+    }
+    Cxx /= xzPts.length; Cxz /= xzPts.length; Czz /= xzPts.length;
+
+    // Eigenvector of 2×2 symmetric covariance → principal axis (ax, az)
+    const trace = Cxx + Czz;
+    const det   = Cxx * Czz - Cxz * Cxz;
+    const disc  = Math.sqrt(Math.max(0, (trace * 0.5) ** 2 - det));
+    const lam1  = trace * 0.5 + disc;
+    let ax, az;
+    if (Math.abs(Cxz) > 1e-10) {
+        ax = lam1 - Czz; az = Cxz;
+    } else {
+        ax = Cxx >= Czz ? 1 : 0; az = Cxx >= Czz ? 0 : 1;
+    }
+    const len = Math.sqrt(ax * ax + az * az);
+    ax /= len; az /= len;
+    const bx = -az, bz = ax; // perpendicular axis
+
+    // ── Step 3: Project all points onto OBB axes to find extents ─────────────────
+    let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+    for (const p of xzPts) {
+        const dx = p.x - cx, dz = p.z - cz;
+        const pA = dx * ax + dz * az;
+        const pB = dx * bx + dz * bz;
+        if (pA < minA) minA = pA; if (pA > maxA) maxA = pA;
+        if (pB < minB) minB = pB; if (pB > maxB) maxB = pB;
+    }
+
+    // ── Step 4: Compute OBB geometry ─────────────────────────────────────────────
+    const widthA = maxA - minA;  // dimension along principal axis
+    const widthB = maxB - minB;  // dimension along perpendicular axis
+
+    // Centre of OBB footprint in world XZ
+    const oCtrA = (minA + maxA) * 0.5, oCtrB = (minB + maxB) * 0.5;
+    const oCtrX = cx + oCtrA * ax + oCtrB * bx;
+    const oCtrZ = cz + oCtrA * az + oCtrB * bz;
+
+    // Y extent: top = y=0 (sea surface / datum), bottom = deepest horizon vertex
+    //           so the box visually frames the full sediment column.
+    const boxHeight = Math.abs(minY); // positive height value (minY is negative)
+    const oCtrY    = minY * 0.5;     // centre is halfway between minY and 0
+
+    // ── Step 5: Build geometry, rotate, and place ─────────────────────────────────
+    const bGeo = new THREE.BoxGeometry(widthA, boxHeight, widthB);
+    const edges = new THREE.EdgesGeometry(bGeo);
+    bGeo.dispose();
+
+    horizonBBox = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: new THREE.Color(params.horizonBBoxColor) })
+    );
+    horizonBBox.position.set(oCtrX, oCtrY, oCtrZ);
+
+    // Rotate around Y so local +X aligns with principal strike axis (ax, 0, az).
+    // Three.js rotateY(θ): local X → (cos θ, 0, −sin θ)  =>  θ = atan2(−az, ax)
+    horizonBBox.rotation.y = Math.atan2(-az, ax);
+
+    horizonBBox.visible = params.horizonBBoxVisible;
+    horizonBBox.userData.isHorizonBBox = true;
+    modelGroup.add(horizonBBox);
+}
+
+
+// ── Per-horizon depth exaggeration ──────────────────────────────────────────
+// Spreads horizon layers apart on the Y axis, anchored to the deepest layer
+// so the regional context surface (which sits below all horizons) is unaffected.
+// Stores a per-mesh Y shift in mesh.userData.exagShift; applyHorizonTexture
+// uses that shift as the base offset before adding any noise.
+function applyHorizonDepthExag(exag) {
+    // Step 1: compute mean raw Y for every horizon mesh
+    const meshInfos = [];
+    modelGroup.children.forEach(mesh => {
+        if (!mesh.userData.isHorizon || !mesh.userData.rawHorizonPos || mesh.userData.isContour) return;
+        if (!(mesh instanceof THREE.Mesh)) return;
+        const raw = mesh.userData.rawHorizonPos;
+        let sumY = 0, count = 0;
+        for (let i = 1; i < raw.length; i += 3) { sumY += raw[i]; count++; }
+        meshInfos.push({ mesh, meanY: count > 0 ? sumY / count : 0 });
+    });
+    if (meshInfos.length === 0) return;
+
+    // Step 2: anchor on the deepest (most-negative Y) horizon
+    const bottomMeanY = Math.min(...meshInfos.map(m => m.meanY));
+
+    // Step 3: store the exaggeration shift on each mesh for applyHorizonTexture to use
+    meshInfos.forEach(({ mesh, meanY }) => {
+        // shift = extra Y offset added on top of raw positions (0 at bottom layer)
+        mesh.userData.exagShift = (meanY - bottomMeanY) * (exag - 1.0);
+    });
+
+    // Step 4: re-apply texture (which reads exagShift) and recolor
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+
+    // Step 5: rebuild bbox so it reflects new extents
+    buildHorizonBBox();
+}
+
+// Helper to add Horizons panel controls for bbox and depth exaggeration.
+// Called once at startup and again in clearScene whenever horizonFolder is recreated.
+function addHorizonPanelControls() {
+    const depthExagFolder = horizonFolder.addFolder('Depth & Display');
+    _trackFolder(depthExagFolder, 'Depth & Display');
+    depthExagFolder.add(params, 'horizonDepthExag', 1.0, 5.0, 0.05)
+        .name('Layer Spread (×)')
+        .onChange(v => applyHorizonDepthExag(v));
+    depthExagFolder.add(params, 'horizonBBoxVisible').name('Footprint Box')
+        .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
+    depthExagFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
+        .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); });
+}
 
 
 function rebuildSubregionBox() {
@@ -932,10 +1090,13 @@ function applyHorizonTexture(amp) {
         const raw = mesh.userData.rawHorizonPos;
         const cX = mesh.userData.centerX || 0, cY = mesh.userData.centerY || 0;
 
+        // Per-mesh depth exaggeration shift (0 when exag=1 or not yet computed)
+        const exagShift = mesh.userData.exagShift || 0;
+
         for (let i = 0; i < pos.count; i++) {
             const rx = raw[i * 3], ry = raw[i * 3 + 1], rz = raw[i * 3 + 2];
-            // Always reset to raw first
-            pos.setXYZ(i, rx, ry, rz);
+            // Reset to raw + depth-exaggeration offset
+            pos.setXYZ(i, rx, ry + exagShift, rz);
             if (amp === 0 || !enabled) continue;
 
             // Is this vertex inside the subregion footprint (XZ plane)?
@@ -961,7 +1122,8 @@ function applyHorizonTexture(amp) {
                 const wx = rx + cX, wz = -(rz) + cY;
                 noise = _fbm2(wx * 0.001, wz * 0.001);
             }
-            pos.setY(i, ry + noise * maxAmp);
+            // Apply noise on top of the depth-exaggeration-shifted base
+            pos.setY(i, ry + exagShift + noise * maxAmp);
         }
         pos.needsUpdate = true;
         mesh.geometry.computeVertexNormals();
@@ -1114,6 +1276,9 @@ function initLayerControls(layers) {
                 modelGroup.children.forEach(c => {
                     if (c.userData.layerName === f.name) c.visible = v;
                 });
+                // PERSIST: master toggle must save each fault individually so they
+                // are still hidden after a browser refresh (DEVELOPER RULE step ②).
+                try { localStorage.setItem('geo_layer_' + f.name, JSON.stringify(layerState[f.name])); } catch(e) {}
             });
             individualFaultCtrls.forEach(ctrl => ctrl.updateDisplay());
         });
@@ -1198,8 +1363,18 @@ function applyState(state) {
     // 1. Update Params
     Object.assign(params, state.params);
 
-    // 2. Update Layer State
-    Object.assign(layerState, state.layers);
+    // 2. Update Layer State — IMPORTANT: mutate existing objects in place so that
+    // lil-gui checkbox/slider bindings (which hold a reference to the original
+    // per-layer object) stay valid. Using Object.assign(layerState, state.layers)
+    // would REPLACE each inner object with a new one, breaking the GUI binding and
+    // causing onChange to save stale (wrong) values to localStorage.
+    Object.keys(state.layers).forEach(name => {
+        if (layerState[name]) {
+            Object.assign(layerState[name], state.layers[name]); // mutate in place
+        } else {
+            layerState[name] = state.layers[name]; // new layer not yet in state
+        }
+    });
 
     // 3. Update GUI Controllers
     gui.controllersRecursive().forEach(c => c.updateDisplay());
@@ -1267,11 +1442,14 @@ function applyState(state) {
 
     // HD Survey Subregion — rebuild box and reapply texture displacement
     rebuildSubregionBox();
-    if (params.horizonTextureAmp > 0 || params.subregionEnabled) {
-        applyHorizonTexture(params.horizonTextureAmp);
+    // Depth exaggeration + texture (applyHorizonDepthExag chains into applyHorizonTexture)
+    applyHorizonDepthExag(params.horizonDepthExag);
+    // Horizon footprint bounding box
+    buildHorizonBBox();
+    if (horizonBBox) {
+        horizonBBox.visible = params.horizonBBoxVisible;
+        horizonBBox.material.color.set(params.horizonBBoxColor);
     }
-    // Also sync zScale on the box if it exists
-    if (subregionBox) subregionBox.position.y = subregionBox.position.y; // noop refresh handled inside rebuildSubregionBox
     // Fault palette
     applyFaultColoring();
 }
@@ -1689,6 +1867,20 @@ textureFolder.add(params, 'subregionX', -6000, 6000, 10).name('Position E-W (m)'
 
 textureFolder.add(params, 'subregionZ', -7000, 7000, 10).name('Position N-S (m)').onChange(v => {
     if (subregionBox) subregionBox.position.z = v;
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+// NOTE: subregionW and subregionD are persisted via the params Proxy.
+// These sliders ensure the restored values are visible after refresh.
+textureFolder.add(params, 'subregionW', 200, 5000, 10).name('Width E-W (m)').onChange(() => {
+    rebuildSubregionBox();
+    applyHorizonTexture(params.horizonTextureAmp);
+    updateColoring();
+});
+
+textureFolder.add(params, 'subregionD', 200, 10000, 10).name('Depth N-S (m)').onChange(() => {
+    rebuildSubregionBox();
     applyHorizonTexture(params.horizonTextureAmp);
     updateColoring();
 });
@@ -2197,7 +2389,7 @@ async function initNorneData() {
     const allLayers = [...validHorizons, ...validFaults];
     initLayerControls(allLayers);
     applyFaultSmoothing(params.faultSmoothIterations);
-    if (params.horizonTextureAmp > 0) applyHorizonTexture(params.horizonTextureAmp);
+    if (params.horizonTextureAmp > 0) applyHorizonDepthExag(params.horizonDepthExag);
     loadRegionalHorizon(); // async — adds ghost surface once CSV loads
 
 
@@ -2223,9 +2415,11 @@ function clearScene() {
         else obj.material?.dispose();
     }
     // Rebuild the Horizons and Faults folders so only new-field layers appear
+    horizonBBox = null; // geometry was disposed by the loop above
     horizonFolder.destroy();
     horizonFolder = gui.addFolder('Horizons');
     _trackFolder(horizonFolder, 'Horizons');
+    addHorizonPanelControls(); // re-attach depth exag + bbox controls to new folder
 
     faultFolder.destroy();
     faultFolder = gui.addFolder('Faults');
