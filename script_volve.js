@@ -492,7 +492,8 @@ async function initVolveData() {
             side: THREE.DoubleSide,
             wireframe: false,
             roughness: 0.6,
-            metalness: 0.2
+            metalness: 0.2,
+            depthWrite: true  // ensures horizon depth is written so regional contour is occluded
         });
 
         const mesh = new THREE.Mesh(geometry, material);
@@ -735,6 +736,29 @@ window.closeModal = (id) => {
 
 // ... Rest of script ...
 const PARAMS_STORAGE_KEY = 'geo_viewer_params';
+const PANEL_STATE_KEY   = 'geo_viewer_panel_state';
+
+// ── Panel open/close persistence ─────────────────────────────────────────────
+// Call after each addFolder() to (a) restore its prior open/closed state from
+// localStorage and (b) save any future toggle back to localStorage.
+function _trackFolder(folder, name) {
+    try {
+        const saved = JSON.parse(localStorage.getItem(PANEL_STATE_KEY) || '{}');
+        if (saved[name] === false) folder.close();
+        else if (saved[name] === true) folder.open();
+    } catch(e) {}
+    folder.$title.addEventListener('click', () => {
+        // lil-gui toggles _closed synchronously before this fires, so read
+        // the current state after a microtask tick.
+        setTimeout(() => {
+            try {
+                const state = JSON.parse(localStorage.getItem(PANEL_STATE_KEY) || '{}');
+                state[name] = !folder._closed;
+                localStorage.setItem(PANEL_STATE_KEY, JSON.stringify(state));
+            } catch(e) {}
+        }, 0);
+    });
+}
 
 const _paramsDefaults = {
     wireframe: false,
@@ -764,7 +788,13 @@ const _paramsDefaults = {
     faultSingleColor: '#aaaaaa',
     regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
     regionalWireframe: false,  // wireframe overlay for regional surface
-    regionalBlendKm: 8         // km beyond survey edge over which to blend conform→poly
+    regionalBlendKm: 8,        // km beyond survey edge over which to blend conform→poly
+    regionalShowContours: false,
+    regionalContourInterval: 50,
+    regionalContourThickness: 1.2,
+    regionalContourOpacity: 0.4,
+    regionalContourColor: '#7799BB',  // matches regional mesh body color
+    regionalContourSmooth: 0          // Laplacian smoothing iterations (0 = off)
 };
 
 // Merge any previously saved values over the defaults
@@ -791,8 +821,13 @@ let savedPresets = {
     'Default': null // Will be captured on init
 };
 
-// Create Layer Controls dynamically
-let layerFolder = gui.addFolder('Layers');
+// ── Top-level panel sections for horizons and faults ─────────────────────────
+let horizonFolder = gui.addFolder('Horizons');
+_trackFolder(horizonFolder, 'Horizons');
+
+let faultFolder = gui.addFolder('Faults');
+_trackFolder(faultFolder, 'Faults');
+faultFolder.close();
 
 // ── Horizon texture (fBm noise displacement) ─────────────────────────────────
 // Simple 3-octave value noise applied as a Y-axis (depth) displacement.
@@ -1020,31 +1055,18 @@ function applyFaultSmoothing(iterations) {
 }
 
 function initLayerControls(layers) {
-    // ── Global fault visibility toggle ───────────────
     const faultLayers = layers.filter(l => l.isFault);
-    const hasFaults = faultLayers.length > 0;
 
     const faultToggleState = { visible: true };
     let masterFaultCtrl = null;
     const individualFaultCtrls = [];
 
-    if (hasFaults) {
-        masterFaultCtrl = layerFolder.add(faultToggleState, 'visible').name('Show All Faults').onChange(v => {
-            faultLayers.forEach(f => {
-                layerState[f.name].visible = v;
-                modelGroup.children.forEach(c => {
-                    if (c.userData.layerName === f.name) c.visible = v;
-                });
-            });
-            individualFaultCtrls.forEach(ctrl => ctrl.updateDisplay());
-        });
-    }
-
-    // ── Per-layer controls for non-fault horizons ────
+    // ── Horizons section ─────────────────────────────────────────────────────
     layers.forEach(h => {
         if (h.isFault) return;
 
-        const folder = layerFolder.addFolder(h.name);
+        const folder = horizonFolder.addFolder(h.name);
+        _trackFolder(folder, 'layer:' + h.name);
         const _storedLayer = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + h.name) || 'null'); } catch(e){ return null; } })();
         layerState[h.name] = { visible: _storedLayer?.visible ?? true, opacity: _storedLayer?.opacity ?? 1.0 };
 
@@ -1083,11 +1105,44 @@ function initLayerControls(layers) {
         });
     });
 
-    // ── Individual fault toggles in a collapsible sub-folder ──
-    if (hasFaults) {
-        const faultFolder = layerFolder.addFolder('Faults ▾');
-        faultFolder.close();
+    // ── Faults section ───────────────────────────────────────────────────────
+    if (faultLayers.length > 0) {
+        // Show All Faults master toggle at the top
+        masterFaultCtrl = faultFolder.add(faultToggleState, 'visible').name('Show All Faults').onChange(v => {
+            faultLayers.forEach(f => {
+                layerState[f.name].visible = v;
+                modelGroup.children.forEach(c => {
+                    if (c.userData.layerName === f.name) c.visible = v;
+                });
+            });
+            individualFaultCtrls.forEach(ctrl => ctrl.updateDisplay());
+        });
 
+        // ── Smoothing slider ──────────────────────────────────────────────────
+        faultFolder.add(params, 'faultSmoothIterations', 0, 8, 1)
+            .name('Smoothing (iterations)')
+            .onChange(v => { applyFaultSmoothing(v); updateColoring(); });
+
+        // ── Fault Coloring sub-folder ─────────────────────────────────────────
+        const faultColorFolder = faultFolder.addFolder('Fault Coloring');
+        _trackFolder(faultColorFolder, 'Fault Coloring');
+        const colorPickerCtrl = faultColorFolder.addColor(params, 'faultSingleColor')
+            .name('Color').onChange(() => applyFaultColoring());
+        faultColorFolder.add(params, 'faultColorMode', {
+            'Original (per-fault)': 'original',
+            'Uniform':              'uniform',
+            'Warm spectrum':        'warm',
+            'Cool spectrum':        'cool',
+            'Earth tones':          'earth',
+            'Monochrome':           'mono',
+        }).name('Palette').onChange(v => {
+            v === 'uniform' ? colorPickerCtrl.show() : colorPickerCtrl.hide();
+            applyFaultColoring();
+        });
+        // Hide the color picker unless starting in uniform mode
+        if (params.faultColorMode !== 'uniform') colorPickerCtrl.hide();
+
+        // ── Individual fault toggles ──────────────────────────────────────────
         faultLayers.forEach(f => {
             const _storedFault = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + f.name) || 'null'); } catch(e){ return null; } })();
             layerState[f.name] = { visible: _storedFault?.visible ?? true, opacity: _storedFault?.opacity ?? 0.75 };
@@ -1104,38 +1159,13 @@ function initLayerControls(layers) {
                     if (c.userData.layerName === f.name) c.visible = v;
                 });
                 try { localStorage.setItem('geo_layer_' + f.name, JSON.stringify(layerState[f.name])); } catch(e) {}
-                // Sync master: uncheck if any off, check if all on
-                if (masterFaultCtrl) {
-                    const allOn = faultLayers.every(fl => layerState[fl.name].visible);
-                    faultToggleState.visible = allOn;
-                    masterFaultCtrl.updateDisplay();
-                }
+                // Sync master toggle
+                const allOn = faultLayers.every(fl => layerState[fl.name].visible);
+                faultToggleState.visible = allOn;
+                masterFaultCtrl.updateDisplay();
             });
             individualFaultCtrls.push(ctrl);
         });
-
-        // ── Smoothing slider ──────────────────────────────────────────────────
-        faultFolder.add(params, 'faultSmoothIterations', 0, 8, 1)
-            .name('Smoothing (iterations)')
-            .onChange(v => { applyFaultSmoothing(v); updateColoring(); });
-
-        // ── Fault Coloring ────────────────────────────────────────────────────
-        const faultColorFolder = faultFolder.addFolder('Fault Coloring');
-        const colorPickerCtrl = faultColorFolder.addColor(params, 'faultSingleColor')
-            .name('Color').onChange(() => applyFaultColoring());
-        faultColorFolder.add(params, 'faultColorMode', {
-            'Original (per-fault)': 'original',
-            'Uniform':              'uniform',
-            'Warm spectrum':        'warm',
-            'Cool spectrum':        'cool',
-            'Earth tones':          'earth',
-            'Monochrome':           'mono',
-        }).name('Palette').onChange(v => {
-            v === 'uniform' ? colorPickerCtrl.show() : colorPickerCtrl.hide();
-            applyFaultColoring();
-        });
-        // Hide the color picker unless starting in uniform mode
-        if (params.faultColorMode !== 'uniform') colorPickerCtrl.hide();
     }
 }
 
@@ -1208,6 +1238,15 @@ function applyState(state) {
             // Visibility is handled in Layer loop + global toggle check below
             if (!params.showContours) c.visible = false;
         }
+        if (c.userData.isRegionalContour) {
+            c.material.uniforms.interval.value   = params.regionalContourInterval;
+            c.material.uniforms.thickness.value  = params.regionalContourThickness;
+            c.material.uniforms.opacity.value    = params.regionalContourOpacity;
+            c.material.uniforms.lineColor.value.set(params.regionalContourColor);
+            c.visible = params.regionalShowContours;
+            // Re-smooth in case the iteration count was changed in the preset
+            smoothRegionalContourY(params.regionalContourSmooth);
+        }
     });
 
     // Lighting
@@ -1217,9 +1256,11 @@ function applyState(state) {
     hemiLight.intensity = params.hemiIntensity;
 
     // Model Transform
-    modelGroup.children.forEach(c => c.material.wireframe = params.wireframe);
     modelGroup.children.forEach(c => {
-        if (!c.userData.isContour) c.material.flatShading = params.flatShading;
+        if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = params.wireframe;
+    });
+    modelGroup.children.forEach(c => {
+        if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.flatShading = params.flatShading;
         c.material.needsUpdate = true;
     });
     modelGroup.scale.y = params.zScale;
@@ -1324,6 +1365,10 @@ const FAULT_PALETTES = {
 
 // ── Regional Åre Fm context horizon ──────────────────────────────────────────
 let regionalMesh = null;
+let regionalContourMesh = null;
+// Vertical offset (scene units = metres) applied to every regional vertex so
+// the regional surface sits just below the deepest survey horizon.
+const REGIONAL_DEPTH_OFFSET = 500;
 
 async function loadRegionalHorizon() {
     let centerX = 0, centerY = 0;
@@ -1364,26 +1409,16 @@ async function loadRegionalHorizon() {
     for (let i = 0; i < N; i++) {
         let t = distArr[i] / (blendM || 1);
         t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
-        const z = -(1 - t) * zConform[i] - t * zPoly[i];
+        // Offset downward so the regional layer sits below the deepest survey horizon.
+        const z = -(1 - t) * zConform[i] - t * zPoly[i] - REGIONAL_DEPTH_OFFSET;
         pos.setXYZ(i, rxArr[i], z, rzArr[i]);
     }
     pos.needsUpdate = true;
     geo.computeVertexNormals();
 
-    // Alpha gradient
-    const cvs = document.createElement('canvas'); cvs.width = cvs.height = 512;
-    const ctx = cvs.getContext('2d');
-    const g = ctx.createRadialGradient(256, 256, 40, 256, 256, 256);
-    g.addColorStop(0.0,  'rgba(255,255,255,1)');
-    g.addColorStop(0.28, 'rgba(255,255,255,1)');
-    g.addColorStop(0.75, 'rgba(255,255,255,0.4)');
-    g.addColorStop(1.0,  'rgba(255,255,255,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
-    const alphaMap = new THREE.CanvasTexture(cvs);
-
     const mat = new THREE.MeshStandardMaterial({
         color: 0x7799BB, transparent: true, opacity: params.regionalOpacity,
-        alphaMap, depthWrite: false, side: THREE.DoubleSide,
+        depthWrite: false, side: THREE.DoubleSide,
         roughness: 0.85, metalness: 0.05, wireframe: params.regionalWireframe
     });
 
@@ -1396,6 +1431,24 @@ async function loadRegionalHorizon() {
     regionalMesh.userData.zPoly    = zPoly;
     regionalMesh.userData.distArr  = distArr;
     modelGroup.add(regionalMesh);
+
+    // ── Regional contour / topology overlay ──────────────────────────────────
+    const rContourMat = contourMaterial.clone();
+    rContourMat.uniforms.interval.value  = params.regionalContourInterval;
+    rContourMat.uniforms.thickness.value = params.regionalContourThickness;
+    rContourMat.uniforms.opacity.value   = params.regionalContourOpacity;
+    rContourMat.uniforms.lineColor.value.set(params.regionalContourColor);
+    // Inherited polygonOffset from base contourMaterial clone is fine here;
+    // the survey-interior triangles are removed from the index buffer instead.
+    regionalContourMesh = new THREE.Mesh(geo.clone(), rContourMat);
+    regionalContourMesh.visible     = params.regionalShowContours;
+    // renderOrder 5: must execute AFTER all horizon surface meshes (0) and
+    // horizon contour overlays (1) so the stencil buffer is fully written first.
+    regionalContourMesh.renderOrder = 5;
+    regionalContourMesh.userData.isRegionalContour = true;
+    modelGroup.add(regionalContourMesh);
+    // Initialise the contour mesh geometry (smoothing = 0 on first load)
+    smoothRegionalContourY(params.regionalContourSmooth);
 
     if (camera) { camera.far = Math.max(camera.far, 200000); camera.updateProjectionMatrix(); }
     console.log('Regional Åre Fm horizon loaded');
@@ -1418,10 +1471,57 @@ function applyRegionalBlend(blendKm) {
     for (let i = 0; i < pos.count; i++) {
         let t = distArr[i] / blendM;
         t = Math.min(t, 1); t = t * t * (3 - 2 * t);
-        pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]), rzArr[i]);
+        pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]) - REGIONAL_DEPTH_OFFSET, rzArr[i]);
     }
     pos.needsUpdate = true;
     regionalMesh.geometry.computeVertexNormals();
+    // Rebuild the contour mesh geometry with optional Laplacian smoothing
+    smoothRegionalContourY(params.regionalContourSmooth);
+}
+
+// Apply N passes of 4-neighbour Laplacian smoothing (Y channel only) to the
+// regional contour mesh, then clip the index buffer so that only triangles
+// OUTSIDE the survey footprint (distArr > 0) are rendered.
+const REGIONAL_W = 51, REGIONAL_H = 51;
+function smoothRegionalContourY(iterations) {
+    if (!regionalContourMesh || !regionalMesh) return;
+    const srcPos = regionalMesh.geometry.attributes.position;
+    const distArr = regionalMesh.userData.distArr;
+    const N = srcPos.count; // 51*51 = 2601
+
+    // Start from the blended (non-smoothed) Y values
+    const yBuf = new Float32Array(N);
+    for (let i = 0; i < N; i++) yBuf[i] = srcPos.getY(i);
+
+    // Laplacian passes on the regular 51x51 grid
+    const W = REGIONAL_W, H = REGIONAL_H;
+    for (let pass = 0; pass < iterations; pass++) {
+        const next = new Float32Array(yBuf);
+        for (let row = 0; row < H; row++) {
+            for (let col = 0; col < W; col++) {
+                const i = row * W + col;
+                let sum = 0, count = 0;
+                if (col > 0)     { sum += yBuf[i - 1]; count++; }
+                if (col < W - 1) { sum += yBuf[i + 1]; count++; }
+                if (row > 0)     { sum += yBuf[i - W]; count++; }
+                if (row < H - 1) { sum += yBuf[i + W]; count++; }
+                if (count > 0) next[i] = (yBuf[i] + sum / count) * 0.5;
+            }
+        }
+        yBuf.set(next);
+    }
+
+    // Write X, smoothed-Y, Z into the contour mesh's own geometry
+    const cGeo = regionalContourMesh.geometry;
+    const cPos = cGeo.attributes.position;
+    for (let i = 0; i < N; i++) {
+        cPos.setXYZ(i, srcPos.getX(i), yBuf[i], srcPos.getZ(i));
+    }
+    cPos.needsUpdate = true;
+    cGeo.computeVertexNormals();
+    // Index is unchanged — all triangles kept; the regional layer sits
+    // REGIONAL_DEPTH_OFFSET metres below the deepest horizon so the depth
+    // buffer naturally occludes it wherever survey horizon meshes exist.
 }
 
 
@@ -1449,7 +1549,7 @@ function updateColoring() {
         // Calculate depth bounds from horizons only (faults excluded)
         let minZ = Infinity, maxZ = -Infinity;
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional) return;
+            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional || mesh.userData.isRegionalContour) return;
             const pos = mesh.geometry.attributes.position;
             for (let i = 0; i < pos.count; i++) {
                 const y = pos.getY(i);
@@ -1462,7 +1562,7 @@ function updateColoring() {
 
         // Apply depth vertex colours to horizons
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional) return;
+            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional || mesh.userData.isRegionalContour) return;
             const geometry = mesh.geometry;
             const count = geometry.attributes.position.count;
             const colors = new Float32Array(count * 3);
@@ -1481,7 +1581,7 @@ function updateColoring() {
     } else {
         // Revert horizons to original colours
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault) return;
+            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegionalContour) return;
             mesh.material.vertexColors = false;
             if (mesh.userData.originalColor) mesh.material.color.setHex(mesh.userData.originalColor);
             mesh.material.needsUpdate = true;
@@ -1493,14 +1593,21 @@ function updateColoring() {
 
 
 const vizFolder = gui.addFolder('Visualization');
+_trackFolder(vizFolder, 'Visualization');
+
+vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
+    modelGroup.scale.y = v;
+});
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
-    modelGroup.children.forEach(c => c.material.wireframe = v);
+    modelGroup.children.forEach(c => {
+        if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = v;
+    });
 });
 
 vizFolder.add(params, 'flatShading').name('Sharp/Flat').onChange((v) => {
     modelGroup.children.forEach(c => {
-        if (!c.userData.isContour) {
+        if (!c.userData.isContour && !c.userData.isRegionalContour) {
             c.material.flatShading = v;
             c.material.needsUpdate = true;
         }
@@ -1508,6 +1615,7 @@ vizFolder.add(params, 'flatShading').name('Sharp/Flat').onChange((v) => {
 });
 
 const depthFolder = vizFolder.addFolder('Depth Coloring');
+_trackFolder(depthFolder, 'Depth Coloring');
 
 depthFolder.add(params, 'colorByDepth').name('Enable').onChange((v) => {
     updateColoring();
@@ -1518,6 +1626,7 @@ depthFolder.add(params, 'selectedColormap', Object.keys(ColormapRegistry)).name(
 });
 
 const topoFolder = vizFolder.addFolder('Topology Lines');
+_trackFolder(topoFolder, 'Topology Lines');
 
 topoFolder.add(params, 'showContours').name('Enable').onChange((v) => {
     modelGroup.children.forEach(c => {
@@ -1560,20 +1669,10 @@ topoFolder.addColor(params, 'contourColor').name('Color').onChange((v) => {
     });
 });
 
-// Regional Context folder
-const regionalFolder = vizFolder.addFolder('Regional Context (Åre Fm)');
-regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
-    if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
-});
-regionalFolder.add(params, 'regionalBlendKm', 0, 25, 0.5).name('Blend Distance (km)').onChange(v => {
-    applyRegionalBlend(v);
-});
-regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
-    if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
-});
-regionalFolder.close();
+// (Regional Context moved to its own top-level section below)
 
 const textureFolder = vizFolder.addFolder('HD Survey Subregion');
+_trackFolder(textureFolder, 'HD Survey Subregion');
 
 
 textureFolder.add(params, 'subregionEnabled').name('Enable Box').onChange(v => {
@@ -1605,11 +1704,9 @@ textureFolder.add(params, 'horizonTextureAmp', 0, 10, 0.1).name('Texture Amplitu
 });
 
 
-gui.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
-    modelGroup.scale.y = v;
-});
 
 const lightFolder = gui.addFolder('Lighting');
+_trackFolder(lightFolder, 'Lighting');
 lightFolder.add(params, 'lightingEnabled').name('Enable Lighting').onChange(v => {
     updateMaterialType(v);
 });
@@ -1624,6 +1721,46 @@ lightFolder.add(params, 'headlampIntensity', 0, 5).name('Headlamp').onChange(v =
 });
 lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
     hemiLight.intensity = v;
+});
+
+// ── Regional Context — top-level panel section ──────────────────────────────
+const regionalFolder = gui.addFolder('Regional Context (Åre Fm)');
+_trackFolder(regionalFolder, 'Regional Context');
+regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
+    if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
+});
+regionalFolder.add(params, 'regionalBlendKm', 0, 25, 0.5).name('Blend Distance (km)').onChange(v => {
+    applyRegionalBlend(v);
+});
+regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
+    if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
+});
+
+const regionalTopoFolder = regionalFolder.addFolder('Topology Lines');
+_trackFolder(regionalTopoFolder, 'Regional Topology Lines');
+
+regionalTopoFolder.add(params, 'regionalContourSmooth', 0, 8, 1).name('Smoothing').onChange(v => {
+    smoothRegionalContourY(v);
+});
+
+regionalTopoFolder.add(params, 'regionalShowContours').name('Enable').onChange(v => {
+    if (regionalContourMesh) regionalContourMesh.visible = v;
+});
+
+regionalTopoFolder.add(params, 'regionalContourInterval', 10, 500, 1).name('Interval').onChange(v => {
+    if (regionalContourMesh) regionalContourMesh.material.uniforms.interval.value = v;
+});
+
+regionalTopoFolder.add(params, 'regionalContourThickness', 0.5, 5.0, 0.1).name('Thickness').onChange(v => {
+    if (regionalContourMesh) regionalContourMesh.material.uniforms.thickness.value = v;
+});
+
+regionalTopoFolder.add(params, 'regionalContourOpacity', 0.05, 1.0, 0.01).name('Opacity').onChange(v => {
+    if (regionalContourMesh) regionalContourMesh.material.uniforms.opacity.value = v;
+});
+
+regionalTopoFolder.addColor(params, 'regionalContourColor').name('Color').onChange(v => {
+    if (regionalContourMesh) regionalContourMesh.material.uniforms.lineColor.value.set(v);
 });
 
 
@@ -1814,7 +1951,8 @@ async function initNorneData() {
             color: h.color,
             side: THREE.DoubleSide,
             roughness: 0.6,
-            metalness: 0.2
+            metalness: 0.2,
+            depthWrite: true  // horizon writes depth buffer to occlude regional contour layer
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.originalColor = h.color;
@@ -2084,9 +2222,15 @@ function clearScene() {
         if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
         else obj.material?.dispose();
     }
-    // Rebuild the Layers folder so only new-field layers appear
-    layerFolder.destroy();
-    layerFolder = gui.addFolder('Layers');
+    // Rebuild the Horizons and Faults folders so only new-field layers appear
+    horizonFolder.destroy();
+    horizonFolder = gui.addFolder('Horizons');
+    _trackFolder(horizonFolder, 'Horizons');
+
+    faultFolder.destroy();
+    faultFolder = gui.addFolder('Faults');
+    _trackFolder(faultFolder, 'Faults');
+    faultFolder.close();
 }
 
 async function loadDataset(datasetName) {
