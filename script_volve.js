@@ -1866,25 +1866,73 @@ function applyRegionalBlend(blendKm) {
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i], rzArr[i]);
         }
     } else {
-        // ── Fit mode: delta-based correction ─────────────────────────────────
-        // For each regional vertex:
-        //   1. Where was I before the fit?     → yPriorSmooth[i]
-        //   2. Where does the horizon say I should be? → -zConformRaw[i]
-        //   3. delta = horizon position - prior position
-        //   4. weight = (1 - smoothstep(distArr / blendKm))
-        //      → 1.0 right at the survey edge (full correction)
-        //      → 0.0 beyond blendKm (back to prior, no change)
-        //   5. y = yPriorSmooth[i] + weight * delta
+        // ── Fit mode: delta toward actual Norne Base mesh Y ──────────────────
+        // target = IDW Y from the rendered Norne Base survey mesh (includes
+        //          depth exaggeration and all visual transforms).
+        // delta  = target - yPriorSmooth[i]
+        // weight = 1 inside survey, fades to 0 at blendKm outside.
+        // y = yPriorSmooth[i] + weight * delta
+
+        // Build / reuse 64×64 bucket-grid of Norne Base mesh vertices.
+        if (!regionalMesh.userData._norneBaseLookup) {
+            const nbMesh = (() => {
+                for (const c of modelGroup.children) {
+                    if (c.userData.isHorizon && !c.userData.isContour &&
+                        c.userData.layerName === 'Norne Base') return c;
+                }
+                return null;
+            })();
+            if (nbMesh) {
+                const nbPos = nbMesh.geometry.attributes.position;
+                let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                for (let k = 0; k < nbPos.count; k++) {
+                    const x = nbPos.getX(k), z = nbPos.getZ(k);
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+                }
+                const BUCKETS = 64;
+                const bW = (maxX - minX) / BUCKETS || 1;
+                const bH = (maxZ - minZ) / BUCKETS || 1;
+                // Store as flat Float32 triplets [x, y, z, …] for speed
+                const grid = Array.from({ length: BUCKETS * BUCKETS }, () => []);
+                for (let k = 0; k < nbPos.count; k++) {
+                    const bx = Math.min(BUCKETS - 1, Math.floor((nbPos.getX(k) - minX) / bW));
+                    const bz = Math.min(BUCKETS - 1, Math.floor((nbPos.getZ(k) - minZ) / bH));
+                    grid[bz * BUCKETS + bx].push(nbPos.getX(k), nbPos.getY(k), nbPos.getZ(k));
+                }
+                regionalMesh.userData._norneBaseLookup = { grid, minX, minZ, bW, bH, BUCKETS };
+            }
+        }
+        const lk = regionalMesh.userData._norneBaseLookup;
+
+        function sampleNorneY(vx, vz) {
+            if (!lk) return null;
+            const { grid, minX, minZ, bW, bH, BUCKETS } = lk;
+            const bx = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vx - minX) / bW)));
+            const bz = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vz - minZ) / bH)));
+            let sumW = 0, sumWY = 0;
+            for (let dz = -1; dz <= 1; dz++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const bi = (bz + dz) * BUCKETS + (bx + dx);
+                    if (bi < 0 || bi >= grid.length) continue;
+                    const arr = grid[bi];
+                    for (let k = 0; k < arr.length; k += 3) {
+                        const d2 = (arr[k] - vx) ** 2 + (arr[k + 2] - vz) ** 2;
+                        const w = d2 < 1 ? 1e9 : 1 / d2; // IDW 1/d²
+                        sumW += w; sumWY += w * arr[k + 1];
+                    }
+                }
+            }
+            return sumW > 0 ? sumWY / sumW : null;
+        }
+
         const blendM = Math.max(blendKm * 1000, 1);
         for (let i = 0; i < pos.count; i++) {
             let t = Math.min(distArr[i] / blendM, 1);
-            t = t * t * (3 - 2 * t); // smoothstep → t=0 at edge, t=1 beyond blendM
-            const weight = 1 - t;    // how much of the correction to apply
-            // yPriorSmooth carries the REGIONAL_DEPTH_OFFSET (it was computed
-            // from initial positions that included the offset). The fit target
-            // must use the same convention so the delta is only the geological
-            // correction, not a constant +100m offset between coordinate frames.
-            const delta = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
+            t = t * t * (3 - 2 * t);       // smoothstep: 0 inside, 1 beyond blendM
+            const weight = 1 - t;           // 1.0 inside survey, 0.0 at blendKm+
+            const target = sampleNorneY(rxArr[i], rzArr[i]);
+            const delta  = target !== null ? target - yPriorSmooth[i] : 0;
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
         }
     }
