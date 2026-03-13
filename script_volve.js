@@ -1812,10 +1812,18 @@ async function loadRegionalHorizon() {
         }
     }
 
-    // Step 4: apply heavy Laplacian smoothing to the shifted seed
+    // Step 4: apply heavy Laplacian smoothing to the shifted seed (for exterior)
     let yPrior = yPriorSeed;
     for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
     regionalMesh.userData.yPrior = yPrior;
+
+    // yPriorSmooth: 16-pass smooth of the UN-shifted initial positions.
+    // Used for the interior in prior mode so that toggling feels like a subtle
+    // refinement (softer version of the same structure) not a complete topology swap.
+    let yPriorSmooth = new Float32Array(N);
+    for (let i = 0; i < N; i++) yPriorSmooth[i] = pos.getY(i);
+    for (let pass = 0; pass < 16; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
+    regionalMesh.userData.yPriorSmooth = yPriorSmooth;
 
     modelGroup.add(regionalMesh);
 
@@ -1852,9 +1860,18 @@ function applyRegionalBlend(blendKm) {
     const pos = regionalMesh.geometry.attributes.position;
 
     if (!params.regionalFitToBase) {
-        // ── Prior mode: use shifted+smoothed prior surface everywhere ─────────
+        // ── Prior mode ────────────────────────────────────────────────────────
+        // Interior: yPriorSmooth (smooth but not shifted — same broad structure
+        // as the fitted surface, just softer).
+        // Exterior: yPrior (shifted hill, always away from the field).
+        // This makes toggling feel like a subtle sharpening, not a full flip.
+        const { yPriorSmooth } = regionalMesh.userData;
+        const blendM = Math.max(blendKm * 1000, 1);
         for (let i = 0; i < pos.count; i++) {
-            pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
+            let t = distArr[i] / blendM;
+            if (t >= 1) { pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]); continue; }
+            t = t * t * (3 - 2 * t);
+            pos.setXYZ(i, rxArr[i], (1 - t) * yPriorSmooth[i] + t * yPrior[i], rzArr[i]);
         }
     } else {
         // ── Fit mode ────────────────────────────────────────────────────────
