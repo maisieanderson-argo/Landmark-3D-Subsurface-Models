@@ -1657,25 +1657,57 @@ async function loadRegionalHorizon() {
     catch(e) { console.warn('Regional horizon CSV not found'); return null; }
 
     const lines = text.trim().split('\n');
-    const W = 51, H = 51;
-    const N = W * H;
-    // Per-vertex storage
-    const rxArr   = new Float32Array(N); // scene X
-    const rzArr   = new Float32Array(N); // scene Z
-    const zConform = new Float32Array(N);
-    const zPoly    = new Float32Array(N);
-    const distArr  = new Float32Array(N);
+    // ── Source grid (matches CSV resolution) ────────────────────────────────
+    const SRC_W = 51, SRC_H = 51;
+    const SRC_N = SRC_W * SRC_H;
+    const src_rx      = new Float32Array(SRC_N);
+    const src_rz      = new Float32Array(SRC_N);
+    const src_zConform = new Float32Array(SRC_N);
+    const src_zPoly    = new Float32Array(SRC_N);
+    const src_dist     = new Float32Array(SRC_N);
 
     lines.slice(1).forEach(l => {
         const p = l.split(',');
         const il = parseInt(p[0]), xl = parseInt(p[1]);
-        const idx = xl * W + il;
-        rxArr[idx]    = parseFloat(p[2]) - centerX;
-        rzArr[idx]    = -(parseFloat(p[3]) - centerY);
-        zConform[idx] = parseFloat(p[4]);
-        zPoly[idx]    = parseFloat(p[5]);
-        distArr[idx]  = parseFloat(p[6]);
+        const idx = xl * SRC_W + il;
+        src_rx[idx]       = parseFloat(p[2]) - centerX;
+        src_rz[idx]       = -(parseFloat(p[3]) - centerY);
+        src_zConform[idx] = parseFloat(p[4]);
+        src_zPoly[idx]    = parseFloat(p[5]);
+        src_dist[idx]     = parseFloat(p[6]);
     });
+
+    // ── Bilinear upsample 51×51 → 101×101 (2× density) ──────────────────────
+    // Each output cell (i,j) maps to source position (i/2, j/2) in [0..50]×[0..50].
+    const W = 101, H = 101;
+    const N = W * H;
+    const rxArr    = new Float32Array(N);
+    const rzArr    = new Float32Array(N);
+    const zConform = new Float32Array(N);
+    const zPoly    = new Float32Array(N);
+    const distArr  = new Float32Array(N);
+
+    function bilerp(src, srcW, srcH, fi, fj) {
+        const i0 = Math.min(Math.floor(fi), srcW - 2);
+        const j0 = Math.min(Math.floor(fj), srcH - 2);
+        const i1 = i0 + 1, j1 = j0 + 1;
+        const ti = fi - i0, tj = fj - j0;
+        return (src[j0 * srcW + i0] * (1 - ti) + src[j0 * srcW + i1] * ti) * (1 - tj)
+             + (src[j1 * srcW + i0] * (1 - ti) + src[j1 * srcW + i1] * ti) * tj;
+    }
+
+    for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+            const fi = i * (SRC_W - 1) / (W - 1); // maps [0,W-1] → [0,SRC_W-1]
+            const fj = j * (SRC_H - 1) / (H - 1);
+            const idx = j * W + i;
+            rxArr[idx]    = bilerp(src_rx,       SRC_W, SRC_H, fi, fj);
+            rzArr[idx]    = bilerp(src_rz,       SRC_W, SRC_H, fi, fj);
+            zConform[idx] = bilerp(src_zConform, SRC_W, SRC_H, fi, fj);
+            zPoly[idx]    = bilerp(src_zPoly,    SRC_W, SRC_H, fi, fj);
+            distArr[idx]  = bilerp(src_dist,     SRC_W, SRC_H, fi, fj);
+        }
+    }
 
     const geo = new THREE.PlaneGeometry(1, 1, W - 1, H - 1);
     const pos = geo.attributes.position;
@@ -1758,7 +1790,7 @@ function applyRegionalBlend(blendKm) {
 // Apply N passes of 4-neighbour Laplacian smoothing (Y channel only) to the
 // regional contour mesh, then clip the index buffer so that only triangles
 // OUTSIDE the survey footprint (distArr > 0) are rendered.
-const REGIONAL_W = 51, REGIONAL_H = 51;
+const REGIONAL_W = 101, REGIONAL_H = 101;
 function smoothRegionalContourY(iterations) {
     if (!regionalContourMesh || !regionalMesh) return;
     const srcPos = regionalMesh.geometry.attributes.position;
