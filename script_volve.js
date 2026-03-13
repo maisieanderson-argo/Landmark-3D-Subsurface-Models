@@ -1881,23 +1881,17 @@ function applyRegionalBlend(blendKm) {
         const N = pos.count;
         const W = REGIONAL_W, H = REGIONAL_H;
 
-        // Compute raw delta for every vertex: how much the horizon says to move
-        let rawDelta = new Float32Array(N);
-        for (let i = 0; i < N; i++) {
-            // target = -zConformRaw[i] - offset  (same convention as yPriorSmooth)
-            rawDelta[i] = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
-        }
-
-        // Smooth the delta field (4 passes) to remove any bilinear-interpolation
-        // staircase from the upsampled 51×51 grid.
-        for (let pass = 0; pass < 4; pass++) rawDelta = _laplacianSmoothGrid(rawDelta, W, H);
-
-        // Apply weighted delta
-        for (let i = 0; i < N; i++) {
+        // Compute delta for every vertex and apply immediately.
+        // zConformRaw is already smooth (bilinear upsampling from 51×51 CSV).
+        // Do NOT smooth the delta — the exterior vertices have delta≈0 (zPoly≈zConformRaw
+        // outside survey), so Laplacian passes bleed those zeros inward and flatten
+        // the interior signal to near-zero.
+        for (let i = 0; i < pos.count; i++) {
             let t = Math.min(distArr[i] / blendM, 1);
             t = t * t * (3 - 2 * t);
             const weight = 1 - t;
-            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * rawDelta[i], rzArr[i]);
+            const delta = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
+            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
         }
     }
 
