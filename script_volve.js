@@ -765,6 +765,7 @@ const _paramsDefaults = {
     wireframe: false,
     flatShading: false,
     colorByDepth: true,
+    depthColorPerLayer: false,      // true = each horizon uses its own min/max depth
     faultSmoothIterations: 3,
     selectedColormap: 'Warm',
     showContours: true,
@@ -801,6 +802,9 @@ const _paramsDefaults = {
     horizonBBoxColor: '#ffffff',       // wireframe colour
     // ── Per-horizon depth exaggeration ───────────────────────────────────────
     horizonDepthExag: 1.0,             // 1 = true scale; >1 spreads layers apart
+    // Seismic crossline panel
+    seismicPanelVisible: true,         // toggle the crossline plane
+    seismicPanelOpacity: 0.9,          // 0 = transparent, 1 = fully opaque
 };
 
 // Merge any previously saved values over the defaults
@@ -896,14 +900,16 @@ function _sampleVolveTexture(u, v) {
 }
 
 let subregionBox = null; // THREE.LineSegments for the white bounding box
-let horizonBBox = null;  // THREE.LineSegments auto-fitted to horizon footprint
+let horizonBBox   = null;  // THREE.LineSegments auto-fitted to horizon footprint
+let seismicPanel  = null;  // THREE.Mesh textured seismic crossline plane
+let _obbState     = null;  // cached OBB geometry params shared by bbox + seismic panel
 
 // Build (or rebuild) an Oriented Bounding Box fitted to the horizon survey footprint.
 // Uses PCA on the XZ vertex cloud to find the dominant survey strike direction,
 // then rotates a box to match it snugly.
-// Height: bottom = deepest horizon vertex, top = y=0 (sea surface / datum),
-//         so the box represents the full column from surface to deepest horizon.
-// Lives in modelGroup so it automatically scales with zScale.
+// Height: top = shallowest horizon vertex (≈ seabed / start of survey),
+//         bottom = deepest horizon vertex + small extra punch (~8% of stack height).
+// Rendered as a dashed wireframe. Lives in modelGroup so it scales with zScale.
 function buildHorizonBBox() {
     if (horizonBBox) {
         modelGroup.remove(horizonBBox);
@@ -914,7 +920,7 @@ function buildHorizonBBox() {
 
     // ── Step 1: Collect XZ footprint positions (sample every 4th vertex for speed) ──
     const xzPts = []; // { x, z }
-    let minY = Infinity;
+    let minY = Infinity, maxY = -Infinity;
     modelGroup.children.forEach(m => {
         if (!m.userData.isHorizon || m.userData.isContour) return;
         if (!(m instanceof THREE.Mesh)) return;
@@ -924,9 +930,10 @@ function buildHorizonBBox() {
             if (y === 0) continue; // skip invalid (hole-fill) vertices
             xzPts.push({ x: pos.getX(i), z: pos.getZ(i) });
             if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
         }
     });
-    if (xzPts.length < 3 || !isFinite(minY)) return;
+    if (xzPts.length < 3 || !isFinite(minY) || !isFinite(maxY)) return;
 
     // ── Step 2: PCA on XZ to find the survey's dominant strike axis ──────────────
     const cx = xzPts.reduce((s, p) => s + p.x, 0) / xzPts.length;
@@ -973,20 +980,26 @@ function buildHorizonBBox() {
     const oCtrX = cx + oCtrA * ax + oCtrB * bx;
     const oCtrZ = cz + oCtrA * az + oCtrB * bz;
 
-    // Y extent: top = y=0 (sea surface / datum), bottom = deepest horizon vertex
-    //           so the box visually frames the full sediment column.
-    const boxHeight = Math.abs(minY); // positive height value (minY is negative)
-    const oCtrY    = minY * 0.5;     // centre is halfway between minY and 0
+    // Y extent: top = shallowest horizon vertex (≈ seabed / start of survey column),
+    //           bottom = deepest vertex + small extra push (8% of stack thickness)
+    //           so the box encloses the full survey column with a hint of depth.
+    const stackH     = maxY - minY;           // total survey stack height
+    const bottom     = minY - stackH * 0.08;  // punch ~8% deeper than deepest horizon
+    const boxHeight  = maxY - bottom;         // positive height
+    const oCtrY      = (maxY + bottom) * 0.5; // centre between seabed top and deep bottom
 
     // ── Step 5: Build geometry, rotate, and place ─────────────────────────────────
     const bGeo = new THREE.BoxGeometry(widthA, boxHeight, widthB);
     const edges = new THREE.EdgesGeometry(bGeo);
     bGeo.dispose();
 
-    horizonBBox = new THREE.LineSegments(
-        edges,
-        new THREE.LineBasicMaterial({ color: new THREE.Color(params.horizonBBoxColor) })
-    );
+    const dashMat = new THREE.LineDashedMaterial({
+        color:    new THREE.Color(params.horizonBBoxColor),
+        dashSize: Math.max(25, stackH * 0.025), // shorter dashes
+        gapSize:  Math.max(50, stackH * 0.06),  // wider gaps for a more spaced-out look
+    });
+    horizonBBox = new THREE.LineSegments(edges, dashMat);
+    horizonBBox.computeLineDistances(); // required for dashed rendering
     horizonBBox.position.set(oCtrX, oCtrY, oCtrZ);
 
     // Rotate around Y so local +X aligns with principal strike axis (ax, 0, az).
@@ -996,6 +1009,41 @@ function buildHorizonBBox() {
     horizonBBox.visible = params.horizonBBoxVisible;
     horizonBBox.userData.isHorizonBBox = true;
     modelGroup.add(horizonBBox);
+
+    // Cache OBB parameters for the seismic panel, then rebuild the panel
+    _obbState = { oCtrX, oCtrY, oCtrZ, rotY: Math.atan2(-az, ax), widthA, widthB, boxHeight };
+    buildSeismicPanel();
+}
+
+// ── Seismic crossline panel ───────────────────────────────────────────────────
+// Vertical plane spanning the full length × height of the OBB, textured with
+// the user-provided seismic section image. Shares the OBB rotation.
+const _seismicTexture = new THREE.TextureLoader().load('seismic_crossline.jpg');
+function buildSeismicPanel() {
+    if (seismicPanel) {
+        modelGroup.remove(seismicPanel);
+        seismicPanel.geometry.dispose();
+        seismicPanel.material.dispose();
+        seismicPanel = null;
+    }
+    if (!_obbState) return;
+
+    const { oCtrX, oCtrY, oCtrZ, rotY, widthB, boxHeight } = _obbState;
+
+    const geo = new THREE.PlaneGeometry(widthB, boxHeight); // crossline = short axis
+    const mat = new THREE.MeshBasicMaterial({
+        map:         _seismicTexture,
+        side:        THREE.DoubleSide,
+        transparent: true,
+        opacity:     params.seismicPanelOpacity,
+        depthWrite:  true,   // write depth so panel occludes topology lines behind it
+    });
+    seismicPanel = new THREE.Mesh(geo, mat);
+    seismicPanel.position.set(oCtrX, oCtrY, oCtrZ);
+    seismicPanel.rotation.y = rotY + Math.PI / 2; // perpendicular to long axis = crossline
+    seismicPanel.visible = params.seismicPanelVisible;
+    seismicPanel.userData.isSeismicPanel = true;
+    modelGroup.add(seismicPanel);
 }
 
 
@@ -1046,6 +1094,11 @@ function addHorizonPanelControls() {
         .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
     depthExagFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
         .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); });
+    // Seismic crossline panel controls
+    depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
+        .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
+    depthExagFolder.add(params, 'seismicPanelOpacity', 0.0, 1.0, 0.01).name('Panel Opacity')
+        .onChange(v => { if (seismicPanel) { seismicPanel.material.opacity = v; seismicPanel.material.needsUpdate = true; } });
 }
 
 
@@ -1339,7 +1392,12 @@ function initLayerControls(layers) {
 function getCurrentState() {
     return {
         params: { ...params },
-        layers: JSON.parse(JSON.stringify(layerState))
+        layers: JSON.parse(JSON.stringify(layerState)),
+        // Camera state — captured so presets restore the exact viewpoint
+        camera: {
+            px: camera.position.x, py: camera.position.y, pz: camera.position.z,
+            tx: controls.target.x, ty: controls.target.y, tz: controls.target.z
+        }
     };
 }
 
@@ -1422,6 +1480,10 @@ function applyState(state) {
             // Re-smooth in case the iteration count was changed in the preset
             smoothRegionalContourY(params.regionalContourSmooth);
         }
+        if (c.userData.isRegional) {
+            c.material.opacity = params.regionalOpacity;
+            c.material.needsUpdate = true;
+        }
     });
 
     // Lighting
@@ -1450,9 +1512,37 @@ function applyState(state) {
         horizonBBox.visible = params.horizonBBoxVisible;
         horizonBBox.material.color.set(params.horizonBBoxColor);
     }
+    // Fault smoothing
+    applyFaultSmoothing(params.faultSmoothIterations);
     // Fault palette
     applyFaultColoring();
+
+    // Regional surface extras
+    if (regionalMesh) {
+        regionalMesh.material.wireframe = params.regionalWireframe;
+        regionalMesh.material.needsUpdate = true;
+    }
+    applyRegionalBlend(params.regionalBlendKm);
+
+    // Seismic crossline panel
+    if (seismicPanel) {
+        seismicPanel.visible = params.seismicPanelVisible;
+        seismicPanel.material.opacity = params.seismicPanelOpacity;
+        seismicPanel.material.needsUpdate = true;
+    }
+
+    // 5. Restore camera viewpoint (only present in states saved after this fix)
+    if (state.camera) {
+        camera.position.set(state.camera.px, state.camera.py, state.camera.pz);
+        controls.target.set(state.camera.tx, state.camera.ty, state.camera.tz);
+        const dist = camera.position.distanceTo(controls.target);
+        camera.near = Math.max(1, dist * 0.001);
+        camera.far  = dist * 50;
+        camera.updateProjectionMatrix();
+        controls.update();
+    }
 }
+
 
 // --- Custom UI Logic ---
 
@@ -1472,28 +1562,30 @@ function updatePresetDropdown(selectName) {
     }
 }
 
+// initPresets — call ONCE on first page load to wire up all event listeners.
+// Never call again; use updatePresetsForDataset() when switching datasets.
+let _presetsInitialised = false;
 function initPresets() {
-    // Load from LocalStorage
+    if (_presetsInitialised) {
+        // Already wired — just refresh Default for the new dataset and return
+        updatePresetsForDataset();
+        return;
+    }
+    _presetsInitialised = true;
+
+    // Load persisted presets from localStorage
     const stored = localStorage.getItem('volve_viz_presets');
     if (stored) {
-        savedPresets = JSON.parse(stored);
+        try { savedPresets = JSON.parse(stored); } catch(e) { /* corrupt — ignore */ }
     }
 
-    // Capture Default
-    savedPresets['Default'] = getCurrentState();
-
-    updatePresetDropdown('Default');
-
-    // Event Listeners
-    const select = document.getElementById('presetSelect');
-    select.addEventListener('change', (e) => {
+    // Wire up dropdown — fires when user picks a preset
+    document.getElementById('presetSelect').addEventListener('change', (e) => {
         const name = e.target.value;
-        if (savedPresets[name]) {
-            applyState(savedPresets[name]);
-        }
+        if (savedPresets[name]) applyState(savedPresets[name]);
     });
 
-    // Save Flow
+    // ── Save flow ──────────────────────────────────────────────────────────────
     document.getElementById('btnSave').addEventListener('click', () => {
         document.getElementById('presetNameInput').value = '';
         document.getElementById('saveModal').style.display = 'flex';
@@ -1502,20 +1594,18 @@ function initPresets() {
 
     document.getElementById('confirmSave').addEventListener('click', () => {
         const name = document.getElementById('presetNameInput').value.trim();
-        if (!name) return alert("Please enter a name");
-
+        if (!name) return alert('Please enter a name');
+        // Snapshot current params + layer visibility + camera position
         savedPresets[name] = getCurrentState();
-        localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets));
-
+        try { localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets)); } catch(e) {}
         updatePresetDropdown(name);
         closeModal('saveModal');
     });
 
-    // Delete Flow
+    // ── Delete flow ────────────────────────────────────────────────────────────
     document.getElementById('btnDelete').addEventListener('click', () => {
         const name = document.getElementById('presetSelect').value;
-        if (name === 'Default') return alert("Cannot delete Default preset");
-
+        if (name === 'Default') return alert('Cannot delete the Default preset');
         document.getElementById('deleteTargetName').textContent = name;
         document.getElementById('deleteModal').style.display = 'flex';
     });
@@ -1523,12 +1613,20 @@ function initPresets() {
     document.getElementById('confirmDelete').addEventListener('click', () => {
         const name = document.getElementById('presetSelect').value;
         delete savedPresets[name];
-        localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets));
-
+        try { localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets)); } catch(e) {}
         updatePresetDropdown('Default');
         applyState(savedPresets['Default']);
         closeModal('deleteModal');
     });
+
+    // Capture initial Default and populate dropdown for the first dataset
+    updatePresetsForDataset();
+}
+
+// Call after each dataset load to refresh the Default snapshot and dropdown.
+function updatePresetsForDataset() {
+    savedPresets['Default'] = getCurrentState();
+    updatePresetDropdown('Default');
 }
 
 // ── Fault colour palettes ────────────────────────────────────────────────────
@@ -1546,7 +1644,7 @@ let regionalMesh = null;
 let regionalContourMesh = null;
 // Vertical offset (scene units = metres) applied to every regional vertex so
 // the regional surface sits just below the deepest survey horizon.
-const REGIONAL_DEPTH_OFFSET = 500;
+const REGIONAL_DEPTH_OFFSET = 100;
 
 async function loadRegionalHorizon() {
     let centerX = 0, centerY = 0;
@@ -1723,43 +1821,76 @@ function applyFaultColoring() {
 }
 
 function updateColoring() {
-    if (params.colorByDepth) {
-        // Calculate depth bounds from horizons only (faults excluded)
-        let minZ = Infinity, maxZ = -Infinity;
-        modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional || mesh.userData.isRegionalContour) return;
-            const pos = mesh.geometry.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-                const y = pos.getY(i);
-                if (!isNaN(y) && y !== 0) {
-                    if (y < minZ) minZ = y;
-                    if (y > maxZ) maxZ = y;
-                }
-            }
-        });
+    // Helper: returns true for any mesh that should NOT be depth-coloured
+    // (faults, contours, regional surfaces, bbox wireframes, non-Mesh objects).
+    const skip = m => (
+        m.userData.isContour ||
+        m.userData.isFault ||
+        m.userData.isRegional ||
+        m.userData.isRegionalContour ||
+        m.userData.isHorizonBBox ||
+        !(m instanceof THREE.Mesh)
+    );
 
-        // Apply depth vertex colours to horizons
-        modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegional || mesh.userData.isRegionalContour) return;
-            const geometry = mesh.geometry;
-            const count = geometry.attributes.position.count;
-            const colors = new Float32Array(count * 3);
-            const pos = geometry.attributes.position;
-            for (let i = 0; i < count; i++) {
-                const y = pos.getY(i);
-                const t = (y - minZ) / (maxZ - minZ);
-                const color = getColormapColor(params.selectedColormap, t);
-                colors[i * 3] = color.r; colors[i * 3 + 1] = color.g; colors[i * 3 + 2] = color.b;
-            }
-            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-            mesh.material.vertexColors = true;
-            mesh.material.color.set(0xffffff);
-            mesh.material.needsUpdate = true;
-        });
+    if (params.colorByDepth) {
+        if (params.depthColorPerLayer) {
+            // ── Per-layer mode: each horizon coloured relative to its own depth extents ──
+            // Good for showing within-surface topography on every layer simultaneously.
+            modelGroup.children.forEach(mesh => {
+                if (skip(mesh)) return;
+                const pos = mesh.geometry.attributes.position;
+                const count = pos.count;
+                // Compute this mesh's own depth range
+                let lo = Infinity, hi = -Infinity;
+                for (let i = 0; i < count; i++) {
+                    const y = pos.getY(i);
+                    if (!isNaN(y) && y !== 0) { if (y < lo) lo = y; if (y > hi) hi = y; }
+                }
+                const range = hi - lo || 1;
+                const colors = new Float32Array(count * 3);
+                for (let i = 0; i < count; i++) {
+                    const t = (pos.getY(i) - lo) / range;
+                    const c = getColormapColor(params.selectedColormap, t);
+                    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+                }
+                mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                mesh.material.vertexColors = true;
+                mesh.material.color.set(0xffffff);
+                mesh.material.needsUpdate = true;
+            });
+        } else {
+            // ── Global mode: one shared depth range across all horizons (default) ──
+            // Shows relative depth between layers — deepest layer = one end of palette.
+            let minZ = Infinity, maxZ = -Infinity;
+            modelGroup.children.forEach(mesh => {
+                if (skip(mesh)) return;
+                const pos = mesh.geometry.attributes.position;
+                for (let i = 0; i < pos.count; i++) {
+                    const y = pos.getY(i);
+                    if (!isNaN(y) && y !== 0) { if (y < minZ) minZ = y; if (y > maxZ) maxZ = y; }
+                }
+            });
+            const range = maxZ - minZ || 1;
+            modelGroup.children.forEach(mesh => {
+                if (skip(mesh)) return;
+                const pos = mesh.geometry.attributes.position;
+                const count = pos.count;
+                const colors = new Float32Array(count * 3);
+                for (let i = 0; i < count; i++) {
+                    const t = (pos.getY(i) - minZ) / range;
+                    const c = getColormapColor(params.selectedColormap, t);
+                    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+                }
+                mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                mesh.material.vertexColors = true;
+                mesh.material.color.set(0xffffff);
+                mesh.material.needsUpdate = true;
+            });
+        }
     } else {
         // Revert horizons to original colours
         modelGroup.children.forEach(mesh => {
-            if (mesh.userData.isContour || mesh.userData.isFault || mesh.userData.isRegionalContour) return;
+            if (skip(mesh)) return;
             mesh.material.vertexColors = false;
             if (mesh.userData.originalColor) mesh.material.color.setHex(mesh.userData.originalColor);
             mesh.material.needsUpdate = true;
@@ -1795,11 +1926,13 @@ vizFolder.add(params, 'flatShading').name('Sharp/Flat').onChange((v) => {
 const depthFolder = vizFolder.addFolder('Depth Coloring');
 _trackFolder(depthFolder, 'Depth Coloring');
 
-depthFolder.add(params, 'colorByDepth').name('Enable').onChange((v) => {
-    updateColoring();
+depthFolder.add(params, 'colorByDepth').name('Enable').onChange(() => updateColoring());
+
+depthFolder.add(params, 'depthColorPerLayer').name('Per-Layer Gradient').onChange(() => {
+    if (params.colorByDepth) updateColoring();
 });
 
-depthFolder.add(params, 'selectedColormap', Object.keys(ColormapRegistry)).name('Colormap').onChange((v) => {
+depthFolder.add(params, 'selectedColormap', Object.keys(ColormapRegistry)).name('Colormap').onChange(() => {
     if (params.colorByDepth) updateColoring();
 });
 
@@ -2397,6 +2530,9 @@ async function initNorneData() {
     // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
     applyState(getCurrentState());
 
+    // Refresh Default preset snapshot + dropdown for this dataset
+    initPresets();
+
     hideLoading();
 
 }
@@ -2415,7 +2551,9 @@ function clearScene() {
         else obj.material?.dispose();
     }
     // Rebuild the Horizons and Faults folders so only new-field layers appear
-    horizonBBox = null; // geometry was disposed by the loop above
+    horizonBBox  = null; // geometry was disposed by the loop above
+    seismicPanel = null; // likewise
+    _obbState    = null;
     horizonFolder.destroy();
     horizonFolder = gui.addFolder('Horizons');
     _trackFolder(horizonFolder, 'Horizons');
