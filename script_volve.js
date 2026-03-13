@@ -790,6 +790,7 @@ const _paramsDefaults = {
     faultSingleColor: '#aaaaaa',
     regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
     regionalWireframe: false,  // wireframe overlay for regional surface
+    regionalFitToBase: true,   // true = conform to Norne Base survey; false = smooth polynomial prior
     regionalBlendKm: 8,        // km beyond survey edge over which to blend conform→poly
     regionalShowContours: false,
     regionalContourInterval: 50,
@@ -1803,8 +1804,15 @@ function applyRegionalBlend(blendKm) {
     const dSample = distArr[100], tSample = Math.min(dSample/blendM,1); const tS = tSample*tSample*(3-2*tSample);
     console.log(`regionalBlend blendKm=${blendKm} blendM=${blendM} sample[100]: dist=${dSample.toFixed(0)}m t=${tS.toFixed(3)} zC=${zConform[100].toFixed(0)} zP=${zPoly[100].toFixed(0)} → y=${(-((1-tS)*zConform[100]+tS*zPoly[100])).toFixed(0)}`);
     for (let i = 0; i < pos.count; i++) {
-        let t = distArr[i] / blendM;
-        t = Math.min(t, 1); t = t * t * (3 - 2 * t);
+        let t;
+        if (!params.regionalFitToBase) {
+            // "Prior" mode: ignore survey conformation entirely, use smooth
+            // polynomial regional surface — the shape before survey data updated it.
+            t = 1;
+        } else {
+            t = distArr[i] / blendM;
+            t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
+        }
         pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]) - REGIONAL_DEPTH_OFFSET, rzArr[i]);
     }
     pos.needsUpdate = true;
@@ -2110,6 +2118,8 @@ lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
 // ── Regional Context — top-level panel section ──────────────────────────────
 const regionalFolder = gui.addFolder('Regional Context (Norne Base)');
 _trackFolder(regionalFolder, 'Regional Context');
+regionalFolder.add(params, 'regionalFitToBase').name('Fit to Norne Base')
+    .onChange(() => applyRegionalBlend(params.regionalBlendKm));
 regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
     if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
 });
