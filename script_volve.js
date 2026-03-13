@@ -1732,6 +1732,9 @@ async function loadRegionalHorizon() {
     // curvature rather than lying on flat bilinear patches (which is what causes
     // the "big polygon" look even with a dense grid).  Geographic positions
     // (rxArr, rzArr) are NOT touched — only depth is smoothed.
+    // Save raw (pre-smoothing) zConform values — used for precise Norne Base
+    // fitting in applyRegionalBlend when params.regionalFitToBase is true.
+    const zConformRaw = new Float32Array(zConform);
     const SMOOTH_ITERS = 4;
     for (let pass = 0; pass < SMOOTH_ITERS; pass++) {
         const sc = _laplacianSmoothGrid(zConform, W, H);
@@ -1765,7 +1768,8 @@ async function loadRegionalHorizon() {
     regionalMesh.userData.layerName = 'Norne Base';
     regionalMesh.userData.rxArr    = rxArr;
     regionalMesh.userData.rzArr    = rzArr;
-    regionalMesh.userData.zConform = zConform;
+    regionalMesh.userData.zConform    = zConform;
+    regionalMesh.userData.zConformRaw = zConformRaw; // pre-smoothing, for precise fit
     regionalMesh.userData.zPoly    = zPoly;
     regionalMesh.userData.distArr  = distArr;
 
@@ -1854,82 +1858,22 @@ function applyRegionalBlend(blendKm) {
         }
     } else {
         // ── Fit mode ────────────────────────────────────────────────────────
-        // Interior vertices (inside survey, distArr ≈ 0): snap to nearest
-        // Norne Base horizon vertex Y for precise mesh-to-mesh alignment.
-        // Exterior vertices: use yPrior so the hill stays shifted in both modes.
-
-        // Build a bucket-grid spatial index from the Norne Base survey mesh.
-        // We only rebuild when the mesh exists and isn't already cached.
-        let nbLookup = regionalMesh.userData._norneBaseLookup;
-        if (!nbLookup) {
-            const nbMesh = (() => {
-                for (const c of modelGroup.children) {
-                    if (c.userData.isHorizon && !c.userData.isContour &&
-                        c.userData.layerName === 'Norne Base') return c;
-                }
-                return null;
-            })();
-
-            if (nbMesh) {
-                const nbPos = nbMesh.geometry.attributes.position;
-                // Find XZ extents of the Norne Base mesh
-                let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-                for (let i = 0; i < nbPos.count; i++) {
-                    const x = nbPos.getX(i), z = nbPos.getZ(i);
-                    if (x < minX) minX = x; if (x > maxX) maxX = x;
-                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-                }
-                const BUCKETS = 64;
-                const bW = (maxX - minX) / BUCKETS || 1;
-                const bH = (maxZ - minZ) / BUCKETS || 1;
-                const grid = Array.from({ length: BUCKETS * BUCKETS }, () => []);
-                for (let i = 0; i < nbPos.count; i++) {
-                    const bx = Math.min(BUCKETS - 1, Math.floor((nbPos.getX(i) - minX) / bW));
-                    const bz = Math.min(BUCKETS - 1, Math.floor((nbPos.getZ(i) - minZ) / bH));
-                    grid[bz * BUCKETS + bx].push({ x: nbPos.getX(i), y: nbPos.getY(i), z: nbPos.getZ(i) });
-                }
-                nbLookup = { grid, minX, minZ, bW, bH, BUCKETS };
-                regionalMesh.userData._norneBaseLookup = nbLookup;
-            }
-        }
-
-        const { grid, minX, minZ, bW, bH, BUCKETS } = nbLookup || {};
-
-        function sampleNorneBaseY(vx, vz) {
-            if (!grid) return null;
-            const bx = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vx - minX) / bW)));
-            const bz = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vz - minZ) / bH)));
-            // Inverse-distance weighted average across 3×3 bucket neighbourhood.
-            // This eliminates the Voronoi staircase from nearest-neighbour snapping.
-            let sumW = 0, sumWY = 0;
-            for (let dz = -1; dz <= 1; dz++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    const bi = (bz + dz) * BUCKETS + (bx + dx);
-                    if (bi < 0 || bi >= grid.length) continue;
-                    for (const p of grid[bi]) {
-                        const d2 = (p.x - vx) ** 2 + (p.z - vz) ** 2;
-                        const w = d2 < 1e-6 ? 1e9 : 1 / d2; // 1/d² weighting
-                        sumW += w; sumWY += w * p.y;
-                    }
-                }
-            }
-            return sumW > 0 ? sumWY / sumW : null;
-        }
-
+        // Use zConformRaw (CSV-derived Norne Base depth, before Laplacian
+        // smoothing) for interior vertices — already a smooth, artifact-free
+        // interpolation of the horizon at each regional grid point.
+        // Blend out to yPrior over blendKm beyond the survey edge.
+        const { zConformRaw } = regionalMesh.userData;
         const blendM = Math.max(blendKm * 1000, 1);
-
         for (let i = 0; i < pos.count; i++) {
             let t = distArr[i] / blendM;
             if (t >= 1) {
-                // Well outside blend zone — pure prior, skip the spatial lookup
                 pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
                 continue;
             }
             t = t * t * (3 - 2 * t); // smoothstep
-            // Blend from exact Norne Base Y (inside) to smooth prior Y (outside)
-            const nbY = sampleNorneBaseY(rxArr[i], rzArr[i]);
-            const y = nbY !== null ? (1 - t) * nbY + t * yPrior[i] : yPrior[i];
-            pos.setXYZ(i, rxArr[i], y, rzArr[i]);
+            // zConformRaw is positive depth (metres); scene Y = -depth
+            const baseY = -zConformRaw[i];
+            pos.setXYZ(i, rxArr[i], (1 - t) * baseY + t * yPrior[i], rzArr[i]);
         }
     }
 
