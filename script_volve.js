@@ -1930,26 +1930,27 @@ function applyRegionalBlend(blendKm) {
         const N = pos.count;
         const W = REGIONAL_W, H = REGIONAL_H;
 
-        // First pass: compute raw fitted Y into a buffer
-        let yFit = new Float32Array(N);
+        // Step 1: sample the raw delta for every vertex.
+        // delta[i] = norneBaseY - yPriorSmooth[i]  (how much the horizon differs from prior)
+        let rawDelta = new Float32Array(N);
         for (let i = 0; i < N; i++) {
-            let t = Math.min(distArr[i] / blendM, 1);
-            t = t * t * (3 - 2 * t);
-            const weight = 1 - t;
             const target = sampleNorneY(rxArr[i], rzArr[i]);
-            const delta  = target !== null ? target - yPriorSmooth[i] : 0;
-            yFit[i] = yPriorSmooth[i] + weight * delta;
+            rawDelta[i] = target !== null ? target - yPriorSmooth[i] : 0;
         }
 
-        // Smooth the fitted Y buffer to remove high-frequency channels that
-        // come from fine-scale Norne Base topographic detail at the regional
-        // mesh's 125m vertex spacing. Laplacian passes preserve the broad
-        // structural shape (dome, dip) while eliminating the ridges.
-        for (let pass = 0; pass < 4; pass++) yFit = _laplacianSmoothGrid(yFit, W, H);
+        // Step 2: smooth the delta field heavily (8 passes).
+        // This removes the Norne Base mesh grid-pattern channels while keeping
+        // the broad structural trend (dome shape, dip direction).
+        // Smoothing the delta — not the final Y — means yPriorSmooth remains
+        // the exact baseline at all boundaries, preserving clean transitions.
+        for (let pass = 0; pass < 8; pass++) rawDelta = _laplacianSmoothGrid(rawDelta, W, H);
 
-        // Write final smoothed positions
+        // Step 3: apply weighted smooth delta to each vertex.
         for (let i = 0; i < N; i++) {
-            pos.setXYZ(i, rxArr[i], yFit[i], rzArr[i]);
+            let t = Math.min(distArr[i] / blendM, 1);
+            t = t * t * (3 - 2 * t);   // smoothstep: 0 inside, 1 beyond blendM
+            const weight = 1 - t;       // 1.0 inside survey, 0.0 at blendKm+
+            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * rawDelta[i], rzArr[i]);
         }
     }
 
