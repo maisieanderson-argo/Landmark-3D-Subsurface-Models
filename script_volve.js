@@ -1758,7 +1758,7 @@ async function loadRegionalHorizon() {
 
     regionalMesh = new THREE.Mesh(geo, mat);
     regionalMesh.userData.isRegional = true;
-    regionalMesh.userData.layerName = 'Åre Fm (Regional)';
+    regionalMesh.userData.layerName = 'Norne Base';
     regionalMesh.userData.rxArr    = rxArr;
     regionalMesh.userData.rzArr    = rzArr;
     regionalMesh.userData.zConform = zConform;
@@ -1785,7 +1785,7 @@ async function loadRegionalHorizon() {
     smoothRegionalContourY(params.regionalContourSmooth);
 
     if (camera) { camera.far = Math.max(camera.far, 200000); camera.updateProjectionMatrix(); }
-    console.log('Regional Åre Fm horizon loaded');
+    console.log('Norne Base regional horizon loaded');
     return regionalMesh;
 }
 
@@ -2107,7 +2107,7 @@ lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
 });
 
 // ── Regional Context — top-level panel section ──────────────────────────────
-const regionalFolder = gui.addFolder('Regional Context (Åre Fm)');
+const regionalFolder = gui.addFolder('Regional Context (Norne Base)');
 _trackFolder(regionalFolder, 'Regional Context');
 regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
     if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
