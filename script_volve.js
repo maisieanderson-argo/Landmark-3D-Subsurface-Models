@@ -1844,29 +1844,91 @@ async function loadRegionalHorizon() {
 //   25 = blend extends all the way to the 25km edge of the regional surface
 function applyRegionalBlend(blendKm) {
     if (!regionalMesh) { console.warn('applyRegionalBlend: no regionalMesh'); return; }
-    if (!regionalMesh.userData.zConform) { console.warn('applyRegionalBlend: no userData.zConform'); return; }
-    const { rxArr, rzArr, zConform, zPoly, distArr } = regionalMesh.userData;
+    const { rxArr, rzArr, distArr, yPrior } = regionalMesh.userData;
     const pos = regionalMesh.geometry.attributes.position;
-    const blendM = Math.max(blendKm * 1000, 1);
-    // Sample vertex 100 for debug (should be in outer region)
-    const dSample = distArr[100], tSample = Math.min(dSample/blendM,1); const tS = tSample*tSample*(3-2*tSample);
-    console.log(`regionalBlend blendKm=${blendKm} blendM=${blendM} sample[100]: dist=${dSample.toFixed(0)}m t=${tS.toFixed(3)} zC=${zConform[100].toFixed(0)} zP=${zPoly[100].toFixed(0)} → y=${(-((1-tS)*zConform[100]+tS*zPoly[100])).toFixed(0)}`);
-    for (let i = 0; i < pos.count; i++) {
-        let t;
-        if (!params.regionalFitToBase) {
-            // "Prior" mode: use the pre-smoothed surface stored at load time.
-            // This is a heavily Laplacian-smoothed version of the fitted positions,
-            // so it sits at the right depth but looks clearly softer/rounder.
-            pos.setXYZ(i, rxArr[i], regionalMesh.userData.yPrior[i], rzArr[i]);
-            continue;
+
+    if (!params.regionalFitToBase) {
+        // ── Prior mode: use shifted+smoothed prior surface everywhere ─────────
+        for (let i = 0; i < pos.count; i++) {
+            pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
         }
-        t = distArr[i] / blendM;
-        t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
-        pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]) - REGIONAL_DEPTH_OFFSET, rzArr[i]);
+    } else {
+        // ── Fit mode ────────────────────────────────────────────────────────
+        // Interior vertices (inside survey, distArr ≈ 0): snap to nearest
+        // Norne Base horizon vertex Y for precise mesh-to-mesh alignment.
+        // Exterior vertices: use yPrior so the hill stays shifted in both modes.
+
+        // Build a bucket-grid spatial index from the Norne Base survey mesh.
+        // We only rebuild when the mesh exists and isn't already cached.
+        let nbLookup = regionalMesh.userData._norneBaseLookup;
+        if (!nbLookup) {
+            const nbMesh = (() => {
+                for (const c of modelGroup.children) {
+                    if (c.userData.isHorizon && !c.userData.isContour &&
+                        c.userData.layerName === 'Norne Base') return c;
+                }
+                return null;
+            })();
+
+            if (nbMesh) {
+                const nbPos = nbMesh.geometry.attributes.position;
+                // Find XZ extents of the Norne Base mesh
+                let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                for (let i = 0; i < nbPos.count; i++) {
+                    const x = nbPos.getX(i), z = nbPos.getZ(i);
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+                }
+                const BUCKETS = 64;
+                const bW = (maxX - minX) / BUCKETS || 1;
+                const bH = (maxZ - minZ) / BUCKETS || 1;
+                const grid = Array.from({ length: BUCKETS * BUCKETS }, () => []);
+                for (let i = 0; i < nbPos.count; i++) {
+                    const bx = Math.min(BUCKETS - 1, Math.floor((nbPos.getX(i) - minX) / bW));
+                    const bz = Math.min(BUCKETS - 1, Math.floor((nbPos.getZ(i) - minZ) / bH));
+                    grid[bz * BUCKETS + bx].push({ x: nbPos.getX(i), y: nbPos.getY(i), z: nbPos.getZ(i) });
+                }
+                nbLookup = { grid, minX, minZ, bW, bH, BUCKETS };
+                regionalMesh.userData._norneBaseLookup = nbLookup;
+            }
+        }
+
+        const { grid, minX, minZ, bW, bH, BUCKETS } = nbLookup || {};
+
+        function nearestNorneBaseY(vx, vz) {
+            if (!grid) return null;
+            const bx = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vx - minX) / bW)));
+            const bz = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vz - minZ) / bH)));
+            let bestY = null, bestD2 = Infinity;
+            // Search 3×3 neighbourhood of buckets for robustness
+            for (let dz = -1; dz <= 1; dz++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const bi = (bz + dz) * BUCKETS + (bx + dx);
+                    if (bi < 0 || bi >= grid.length) continue;
+                    for (const p of grid[bi]) {
+                        const d2 = (p.x - vx) ** 2 + (p.z - vz) ** 2;
+                        if (d2 < bestD2) { bestD2 = d2; bestY = p.y; }
+                    }
+                }
+            }
+            return bestY;
+        }
+
+        for (let i = 0; i < pos.count; i++) {
+            if (distArr[i] < 500) {
+                // Inside survey — snap to nearest Norne Base vertex Y
+                const nbY = nearestNorneBaseY(rxArr[i], rzArr[i]);
+                const y = nbY !== null ? nbY : yPrior[i];
+                pos.setXYZ(i, rxArr[i], y, rzArr[i]);
+            } else {
+                // Outside survey — always use shifted prior (hill is always moved)
+                pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
+            }
+        }
     }
+
     pos.needsUpdate = true;
     regionalMesh.geometry.computeVertexNormals();
-    // Rebuild the contour mesh geometry with optional Laplacian smoothing
     smoothRegionalContourY(params.regionalContourSmooth);
 }
 
