@@ -1817,12 +1817,16 @@ async function loadRegionalHorizon() {
     for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
     regionalMesh.userData.yPrior = yPrior;
 
-    // yPriorSmooth: 16-pass smooth of the UN-shifted initial positions.
-    // Used for the interior in prior mode so that toggling feels like a subtle
-    // refinement (softer version of the same structure) not a complete topology swap.
+    // yPriorSmooth: the polynomial regional trend, lightly smoothed.
+    // This is the pre-survey interpretation — what we thought the depth was
+    // before the Norne survey data was available. zPoly is the smooth polynomial
+    // fit to the large-scale regional framework, with no local structural detail.
+    // delta (in fit mode) = zConformRaw - zPoly = local structural departure
+    // of the Norne Base above/below the regional polynomial trend.
+    // This delta IS geologically meaningful and visually significant.
     let yPriorSmooth = new Float32Array(N);
-    for (let i = 0; i < N; i++) yPriorSmooth[i] = pos.getY(i);
-    for (let pass = 0; pass < 16; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
+    for (let i = 0; i < N; i++) yPriorSmooth[i] = -zPoly[i] - REGIONAL_DEPTH_OFFSET;
+    for (let pass = 0; pass < 4; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
     regionalMesh.userData.yPriorSmooth = yPriorSmooth;
 
     modelGroup.add(regionalMesh);
@@ -1866,90 +1870,33 @@ function applyRegionalBlend(blendKm) {
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i], rzArr[i]);
         }
     } else {
-        // ── Fit mode: delta toward actual Norne Base mesh Y ──────────────────
-        // target = IDW Y from the rendered Norne Base survey mesh (includes
-        //          depth exaggeration and all visual transforms).
-        // delta  = target - yPriorSmooth[i]
-        // weight = 1 inside survey, fades to 0 at blendKm outside.
-        // y = yPriorSmooth[i] + weight * delta
-
-        // Build / reuse 64×64 bucket-grid of Norne Base mesh vertices.
-        if (!regionalMesh.userData._norneBaseLookup) {
-            const nbMesh = (() => {
-                for (const c of modelGroup.children) {
-                    if (c.userData.isHorizon && !c.userData.isContour &&
-                        c.userData.layerName === 'Norne Base') return c;
-                }
-                return null;
-            })();
-            if (nbMesh) {
-                const nbPos = nbMesh.geometry.attributes.position;
-                let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-                for (let k = 0; k < nbPos.count; k++) {
-                    const x = nbPos.getX(k), z = nbPos.getZ(k);
-                    if (x < minX) minX = x; if (x > maxX) maxX = x;
-                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-                }
-                const BUCKETS = 64;
-                const bW = (maxX - minX) / BUCKETS || 1;
-                const bH = (maxZ - minZ) / BUCKETS || 1;
-                // Store as flat Float32 triplets [x, y, z, …] for speed
-                const grid = Array.from({ length: BUCKETS * BUCKETS }, () => []);
-                for (let k = 0; k < nbPos.count; k++) {
-                    const bx = Math.min(BUCKETS - 1, Math.floor((nbPos.getX(k) - minX) / bW));
-                    const bz = Math.min(BUCKETS - 1, Math.floor((nbPos.getZ(k) - minZ) / bH));
-                    grid[bz * BUCKETS + bx].push(nbPos.getX(k), nbPos.getY(k), nbPos.getZ(k));
-                }
-                regionalMesh.userData._norneBaseLookup = { grid, minX, minZ, bW, bH, BUCKETS };
-            }
-        }
-        const lk = regionalMesh.userData._norneBaseLookup;
-
-        function sampleNorneY(vx, vz) {
-            if (!lk) return null;
-            const { grid, minX, minZ, bW, bH, BUCKETS } = lk;
-            const bx = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vx - minX) / bW)));
-            const bz = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vz - minZ) / bH)));
-            let sumW = 0, sumWY = 0;
-            for (let dz = -1; dz <= 1; dz++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    const bi = (bz + dz) * BUCKETS + (bx + dx);
-                    if (bi < 0 || bi >= grid.length) continue;
-                    const arr = grid[bi];
-                    for (let k = 0; k < arr.length; k += 3) {
-                        const d2 = (arr[k] - vx) ** 2 + (arr[k + 2] - vz) ** 2;
-                        const w = d2 < 1 ? 1e9 : 1 / d2; // IDW 1/d²
-                        sumW += w; sumWY += w * arr[k + 1];
-                    }
-                }
-            }
-            return sumW > 0 ? sumWY / sumW : null;
-        }
-
+        // ── Fit mode: delta = zConformRaw - zPoly (structural relief) ──────────
+        // Prior position:  -zPoly[i] - 100m  (regional polynomial trend)
+        // Fit target:      -zConformRaw[i] - 100m  (actual Norne Base depth)
+        // Delta represents the local structural departure of the Norne Base
+        // from the polynomial regional trend. This is non-trivial — the Norne
+        // dome can be 100-300m above the regional trend in the crest area.
+        const { zConformRaw } = regionalMesh.userData;
         const blendM = Math.max(blendKm * 1000, 1);
         const N = pos.count;
         const W = REGIONAL_W, H = REGIONAL_H;
 
-        // Step 1: sample the raw delta for every vertex.
-        // delta[i] = norneBaseY - yPriorSmooth[i]  (how much the horizon differs from prior)
+        // Compute raw delta for every vertex: how much the horizon says to move
         let rawDelta = new Float32Array(N);
         for (let i = 0; i < N; i++) {
-            const target = sampleNorneY(rxArr[i], rzArr[i]);
-            rawDelta[i] = target !== null ? target - yPriorSmooth[i] : 0;
+            // target = -zConformRaw[i] - offset  (same convention as yPriorSmooth)
+            rawDelta[i] = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
         }
 
-        // Step 2: smooth the delta field heavily (8 passes).
-        // This removes the Norne Base mesh grid-pattern channels while keeping
-        // the broad structural trend (dome shape, dip direction).
-        // Smoothing the delta — not the final Y — means yPriorSmooth remains
-        // the exact baseline at all boundaries, preserving clean transitions.
-        for (let pass = 0; pass < 8; pass++) rawDelta = _laplacianSmoothGrid(rawDelta, W, H);
+        // Smooth the delta field (4 passes) to remove any bilinear-interpolation
+        // staircase from the upsampled 51×51 grid.
+        for (let pass = 0; pass < 4; pass++) rawDelta = _laplacianSmoothGrid(rawDelta, W, H);
 
-        // Step 3: apply weighted smooth delta to each vertex.
+        // Apply weighted delta
         for (let i = 0; i < N; i++) {
             let t = Math.min(distArr[i] / blendM, 1);
-            t = t * t * (3 - 2 * t);   // smoothstep: 0 inside, 1 beyond blendM
-            const weight = 1 - t;       // 1.0 inside survey, 0.0 at blendKm+
+            t = t * t * (3 - 2 * t);
+            const weight = 1 - t;
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * rawDelta[i], rzArr[i]);
         }
     }
