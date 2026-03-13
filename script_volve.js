@@ -1914,16 +1914,20 @@ function applyRegionalBlend(blendKm) {
             return bestY;
         }
 
+        const blendM = Math.max(blendKm * 1000, 1);
+
         for (let i = 0; i < pos.count; i++) {
-            if (distArr[i] < 500) {
-                // Inside survey — snap to nearest Norne Base vertex Y
-                const nbY = nearestNorneBaseY(rxArr[i], rzArr[i]);
-                const y = nbY !== null ? nbY : yPrior[i];
-                pos.setXYZ(i, rxArr[i], y, rzArr[i]);
-            } else {
-                // Outside survey — always use shifted prior (hill is always moved)
+            let t = distArr[i] / blendM;
+            if (t >= 1) {
+                // Well outside blend zone — pure prior, skip the spatial lookup
                 pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
+                continue;
             }
+            t = t * t * (3 - 2 * t); // smoothstep
+            // Blend from exact Norne Base Y (inside) to smooth prior Y (outside)
+            const nbY = nearestNorneBaseY(rxArr[i], rzArr[i]);
+            const y = nbY !== null ? (1 - t) * nbY + t * yPrior[i] : yPrior[i];
+            pos.setXYZ(i, rxArr[i], y, rzArr[i]);
         }
     }
 
