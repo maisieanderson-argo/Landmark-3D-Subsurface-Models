@@ -1880,7 +1880,11 @@ function applyRegionalBlend(blendKm) {
             let t = Math.min(distArr[i] / blendM, 1);
             t = t * t * (3 - 2 * t); // smoothstep → t=0 at edge, t=1 beyond blendM
             const weight = 1 - t;    // how much of the correction to apply
-            const delta = (-zConformRaw[i]) - yPriorSmooth[i];
+            // yPriorSmooth carries the REGIONAL_DEPTH_OFFSET (it was computed
+            // from initial positions that included the offset). The fit target
+            // must use the same convention so the delta is only the geological
+            // correction, not a constant +100m offset between coordinate frames.
+            const delta = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
         }
     }
