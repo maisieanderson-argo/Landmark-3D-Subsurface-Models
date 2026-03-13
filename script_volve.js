@@ -1856,41 +1856,32 @@ async function loadRegionalHorizon() {
 //   25 = blend extends all the way to the 25km edge of the regional surface
 function applyRegionalBlend(blendKm) {
     if (!regionalMesh) { console.warn('applyRegionalBlend: no regionalMesh'); return; }
-    const { rxArr, rzArr, distArr, yPrior } = regionalMesh.userData;
+    const { rxArr, rzArr, distArr, yPriorSmooth, zConformRaw } = regionalMesh.userData;
     const pos = regionalMesh.geometry.attributes.position;
 
     if (!params.regionalFitToBase) {
         // ── Prior mode ────────────────────────────────────────────────────────
-        // Interior: yPriorSmooth (smooth but not shifted — same broad structure
-        // as the fitted surface, just softer).
-        // Exterior: yPrior (shifted hill, always away from the field).
-        // This makes toggling feel like a subtle sharpening, not a full flip.
-        const { yPriorSmooth } = regionalMesh.userData;
-        const blendM = Math.max(blendKm * 1000, 1);
+        // y = yPriorSmooth everywhere. Simple, clean, no shift needed.
         for (let i = 0; i < pos.count; i++) {
-            let t = distArr[i] / blendM;
-            if (t >= 1) { pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]); continue; }
-            t = t * t * (3 - 2 * t);
-            pos.setXYZ(i, rxArr[i], (1 - t) * yPriorSmooth[i] + t * yPrior[i], rzArr[i]);
+            pos.setXYZ(i, rxArr[i], yPriorSmooth[i], rzArr[i]);
         }
     } else {
-        // ── Fit mode ────────────────────────────────────────────────────────
-        // Use zConformRaw (CSV-derived Norne Base depth, before Laplacian
-        // smoothing) for interior vertices — already a smooth, artifact-free
-        // interpolation of the horizon at each regional grid point.
-        // Blend out to yPrior over blendKm beyond the survey edge.
-        const { zConformRaw } = regionalMesh.userData;
+        // ── Fit mode: delta-based correction ─────────────────────────────────
+        // For each regional vertex:
+        //   1. Where was I before the fit?     → yPriorSmooth[i]
+        //   2. Where does the horizon say I should be? → -zConformRaw[i]
+        //   3. delta = horizon position - prior position
+        //   4. weight = (1 - smoothstep(distArr / blendKm))
+        //      → 1.0 right at the survey edge (full correction)
+        //      → 0.0 beyond blendKm (back to prior, no change)
+        //   5. y = yPriorSmooth[i] + weight * delta
         const blendM = Math.max(blendKm * 1000, 1);
         for (let i = 0; i < pos.count; i++) {
-            let t = distArr[i] / blendM;
-            if (t >= 1) {
-                pos.setXYZ(i, rxArr[i], yPrior[i], rzArr[i]);
-                continue;
-            }
-            t = t * t * (3 - 2 * t); // smoothstep
-            // zConformRaw is positive depth (metres); scene Y = -depth
-            const baseY = -zConformRaw[i];
-            pos.setXYZ(i, rxArr[i], (1 - t) * baseY + t * yPrior[i], rzArr[i]);
+            let t = Math.min(distArr[i] / blendM, 1);
+            t = t * t * (3 - 2 * t); // smoothstep → t=0 at edge, t=1 beyond blendM
+            const weight = 1 - t;    // how much of the correction to apply
+            const delta = (-zConformRaw[i]) - yPriorSmooth[i];
+            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
         }
     }
 
