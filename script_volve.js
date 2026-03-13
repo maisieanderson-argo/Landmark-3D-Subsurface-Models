@@ -1887,6 +1887,7 @@ function updateColoring() {
         m.userData.isRegional ||
         m.userData.isRegionalContour ||
         m.userData.isHorizonBBox ||
+        m.userData.isSeismicPanel ||
         !(m instanceof THREE.Mesh)
     );
 
