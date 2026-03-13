@@ -1895,23 +1895,25 @@ function applyRegionalBlend(blendKm) {
 
         const { grid, minX, minZ, bW, bH, BUCKETS } = nbLookup || {};
 
-        function nearestNorneBaseY(vx, vz) {
+        function sampleNorneBaseY(vx, vz) {
             if (!grid) return null;
             const bx = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vx - minX) / bW)));
             const bz = Math.max(0, Math.min(BUCKETS - 1, Math.floor((vz - minZ) / bH)));
-            let bestY = null, bestD2 = Infinity;
-            // Search 3×3 neighbourhood of buckets for robustness
+            // Inverse-distance weighted average across 3×3 bucket neighbourhood.
+            // This eliminates the Voronoi staircase from nearest-neighbour snapping.
+            let sumW = 0, sumWY = 0;
             for (let dz = -1; dz <= 1; dz++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     const bi = (bz + dz) * BUCKETS + (bx + dx);
                     if (bi < 0 || bi >= grid.length) continue;
                     for (const p of grid[bi]) {
                         const d2 = (p.x - vx) ** 2 + (p.z - vz) ** 2;
-                        if (d2 < bestD2) { bestD2 = d2; bestY = p.y; }
+                        const w = d2 < 1e-6 ? 1e9 : 1 / d2; // 1/d² weighting
+                        sumW += w; sumWY += w * p.y;
                     }
                 }
             }
-            return bestY;
+            return sumW > 0 ? sumWY / sumW : null;
         }
 
         const blendM = Math.max(blendKm * 1000, 1);
@@ -1925,7 +1927,7 @@ function applyRegionalBlend(blendKm) {
             }
             t = t * t * (3 - 2 * t); // smoothstep
             // Blend from exact Norne Base Y (inside) to smooth prior Y (outside)
-            const nbY = nearestNorneBaseY(rxArr[i], rzArr[i]);
+            const nbY = sampleNorneBaseY(rxArr[i], rzArr[i]);
             const y = nbY !== null ? (1 - t) * nbY + t * yPrior[i] : yPrior[i];
             pos.setXYZ(i, rxArr[i], y, rzArr[i]);
         }
