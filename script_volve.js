@@ -1677,9 +1677,9 @@ async function loadRegionalHorizon() {
         src_dist[idx]     = parseFloat(p[6]);
     });
 
-    // ── Bilinear upsample 51×51 → 201×201 (4× density) ──────────────────────
-    // Each output cell (i,j) maps to source position (i/4, j/4) in [0..50]×[0..50].
-    const W = 201, H = 201;
+    // ── Bilinear upsample 51×51 → 401×401 (8× density) ──────────────────────
+    // Each output cell (i,j) maps to source position (i/8, j/8) in [0..50]×[0..50].
+    const W = 401, H = 401;
     const N = W * H;
     const rxArr    = new Float32Array(N);
     const rzArr    = new Float32Array(N);
@@ -1816,7 +1816,7 @@ function applyRegionalBlend(blendKm) {
 // Apply N passes of 4-neighbour Laplacian smoothing (Y channel only) to the
 // regional contour mesh, then clip the index buffer so that only triangles
 // OUTSIDE the survey footprint (distArr > 0) are rendered.
-const REGIONAL_W = 201, REGIONAL_H = 201;
+const REGIONAL_W = 401, REGIONAL_H = 401;
 function smoothRegionalContourY(iterations) {
     if (!regionalContourMesh || !regionalMesh) return;
     const srcPos = regionalMesh.geometry.attributes.position;
