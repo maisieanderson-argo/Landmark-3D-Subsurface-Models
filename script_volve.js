@@ -1771,10 +1771,45 @@ async function loadRegionalHorizon() {
 
     // ── Pre-compute the "prior" surface: heavily-smoothed version of the fitted
     // positions, used when params.regionalFitToBase is false.
-    // We smooth the initial Y values (not zPoly which is nearly flat at view scale)
-    // so the prior surface stays at the right depth while looking clearly softer.
-    let yPrior = new Float32Array(N);
-    for (let i = 0; i < N; i++) yPrior[i] = pos.getY(i);
+    // Features are shifted ~25% of the field width outward from the field
+    // centroid, so the prior hill sits visibly away from the survey boundary.
+
+    // Step 1: find the field centroid in 401×401 grid coordinates
+    let fieldSumI = 0, fieldSumJ = 0, fieldCount = 0;
+    for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+            if (distArr[j * W + i] < 500) { fieldSumI += i; fieldSumJ += j; fieldCount++; }
+        }
+    }
+    const fCentI = fieldCount > 0 ? fieldSumI / fieldCount : W / 2;
+    const fCentJ = fieldCount > 0 ? fieldSumJ / fieldCount : H / 2;
+
+    // Step 2: estimate field half-width in grid cells (use inline span of interior verts)
+    let minFI = W, maxFI = 0;
+    for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+            if (distArr[j * W + i] < 500) { if (i < minFI) minFI = i; if (i > maxFI) maxFI = i; }
+        }
+    }
+    const fieldWidthCells = Math.max(maxFI - minFI, 1);
+    const PRIOR_SHIFT = Math.round(fieldWidthCells * 0.25); // 25% of field width
+
+    // Step 3: seed yPrior by sampling Y values shifted inward toward the field centroid
+    // (sampling from i - di*shift means features appear at i + di*shift → outward)
+    const yPriorSeed = new Float32Array(N);
+    for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+            let di = i - fCentI, dj = j - fCentJ;
+            const mag = Math.sqrt(di * di + dj * dj) || 1;
+            di /= mag; dj /= mag;
+            const si = Math.max(0, Math.min(W - 1, Math.round(i - di * PRIOR_SHIFT)));
+            const sj = Math.max(0, Math.min(H - 1, Math.round(j - dj * PRIOR_SHIFT)));
+            yPriorSeed[j * W + i] = pos.getY(sj * W + si);
+        }
+    }
+
+    // Step 4: apply heavy Laplacian smoothing to the shifted seed
+    let yPrior = yPriorSeed;
     for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
     regionalMesh.userData.yPrior = yPrior;
 
