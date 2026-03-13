@@ -1927,13 +1927,29 @@ function applyRegionalBlend(blendKm) {
         }
 
         const blendM = Math.max(blendKm * 1000, 1);
-        for (let i = 0; i < pos.count; i++) {
+        const N = pos.count;
+        const W = REGIONAL_W, H = REGIONAL_H;
+
+        // First pass: compute raw fitted Y into a buffer
+        let yFit = new Float32Array(N);
+        for (let i = 0; i < N; i++) {
             let t = Math.min(distArr[i] / blendM, 1);
-            t = t * t * (3 - 2 * t);       // smoothstep: 0 inside, 1 beyond blendM
-            const weight = 1 - t;           // 1.0 inside survey, 0.0 at blendKm+
+            t = t * t * (3 - 2 * t);
+            const weight = 1 - t;
             const target = sampleNorneY(rxArr[i], rzArr[i]);
             const delta  = target !== null ? target - yPriorSmooth[i] : 0;
-            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
+            yFit[i] = yPriorSmooth[i] + weight * delta;
+        }
+
+        // Smooth the fitted Y buffer to remove high-frequency channels that
+        // come from fine-scale Norne Base topographic detail at the regional
+        // mesh's 125m vertex spacing. Laplacian passes preserve the broad
+        // structural shape (dome, dip) while eliminating the ridges.
+        for (let pass = 0; pass < 4; pass++) yFit = _laplacianSmoothGrid(yFit, W, H);
+
+        // Write final smoothed positions
+        for (let i = 0; i < N; i++) {
+            pos.setXYZ(i, rxArr[i], yFit[i], rzArr[i]);
         }
     }
 
