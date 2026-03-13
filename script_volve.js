@@ -1817,16 +1817,13 @@ async function loadRegionalHorizon() {
     for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
     regionalMesh.userData.yPrior = yPrior;
 
-    // yPriorSmooth: the polynomial regional trend, lightly smoothed.
-    // This is the pre-survey interpretation — what we thought the depth was
-    // before the Norne survey data was available. zPoly is the smooth polynomial
-    // fit to the large-scale regional framework, with no local structural detail.
-    // delta (in fit mode) = zConformRaw - zPoly = local structural departure
-    // of the Norne Base above/below the regional polynomial trend.
-    // This delta IS geologically meaningful and visually significant.
+    // yPriorSmooth: the smooth regional surface the user sees when unchecked.
+    // 16-pass Laplacian smooth of the initial Norne-derived mesh positions.
+    // Fit mode delta = (-zConformRaw - offset) - yPriorSmooth:  the fine-scale
+    // horizon detail that 16 passes of smoothing removed — visible and real.
     let yPriorSmooth = new Float32Array(N);
-    for (let i = 0; i < N; i++) yPriorSmooth[i] = -zPoly[i] - REGIONAL_DEPTH_OFFSET;
-    for (let pass = 0; pass < 4; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
+    for (let i = 0; i < N; i++) yPriorSmooth[i] = pos.getY(i);
+    for (let pass = 0; pass < 16; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
     regionalMesh.userData.yPriorSmooth = yPriorSmooth;
 
     modelGroup.add(regionalMesh);
