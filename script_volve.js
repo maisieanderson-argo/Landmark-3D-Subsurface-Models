@@ -1677,9 +1677,9 @@ async function loadRegionalHorizon() {
         src_dist[idx]     = parseFloat(p[6]);
     });
 
-    // ── Bilinear upsample 51×51 → 101×101 (2× density) ──────────────────────
-    // Each output cell (i,j) maps to source position (i/2, j/2) in [0..50]×[0..50].
-    const W = 101, H = 101;
+    // ── Bilinear upsample 51×51 → 201×201 (4× density) ──────────────────────
+    // Each output cell (i,j) maps to source position (i/4, j/4) in [0..50]×[0..50].
+    const W = 201, H = 201;
     const N = W * H;
     const rxArr    = new Float32Array(N);
     const rzArr    = new Float32Array(N);
@@ -1707,6 +1707,32 @@ async function loadRegionalHorizon() {
             zPoly[idx]    = bilerp(src_zPoly,    SRC_W, SRC_H, fi, fj);
             distArr[idx]  = bilerp(src_dist,     SRC_W, SRC_H, fi, fj);
         }
+    }
+
+    // ── Laplacian smooth the depth arrays so intermediate vertices get genuine
+    // curvature rather than lying on flat bilinear patches (which is what causes
+    // the "big polygon" look even with a dense grid).  Geographic positions
+    // (rxArr, rzArr) are NOT touched — only depth is smoothed.
+    const SMOOTH_ITERS = 4;
+    function laplacianSmooth1D(arr, w, h) {
+        const out = new Float32Array(arr);
+        for (let row = 0; row < h; row++) {
+            for (let col = 0; col < w; col++) {
+                const i = row * w + col;
+                let sum = 0, cnt = 0;
+                if (col > 0)     { sum += arr[i - 1]; cnt++; }
+                if (col < w - 1) { sum += arr[i + 1]; cnt++; }
+                if (row > 0)     { sum += arr[i - w]; cnt++; }
+                if (row < h - 1) { sum += arr[i + w]; cnt++; }
+                if (cnt > 0) out[i] = arr[i] * 0.5 + (sum / cnt) * 0.5;
+            }
+        }
+        return out;
+    }
+    for (let pass = 0; pass < SMOOTH_ITERS; pass++) {
+        const sc = laplacianSmooth1D(zConform, W, H);
+        const sp = laplacianSmooth1D(zPoly,    W, H);
+        for (let i = 0; i < N; i++) { zConform[i] = sc[i]; zPoly[i] = sp[i]; }
     }
 
     const geo = new THREE.PlaneGeometry(1, 1, W - 1, H - 1);
@@ -1790,7 +1816,7 @@ function applyRegionalBlend(blendKm) {
 // Apply N passes of 4-neighbour Laplacian smoothing (Y channel only) to the
 // regional contour mesh, then clip the index buffer so that only triangles
 // OUTSIDE the survey footprint (distArr > 0) are rendered.
-const REGIONAL_W = 101, REGIONAL_H = 101;
+const REGIONAL_W = 201, REGIONAL_H = 201;
 function smoothRegionalContourY(iterations) {
     if (!regionalContourMesh || !regionalMesh) return;
     const srcPos = regionalMesh.geometry.attributes.position;
