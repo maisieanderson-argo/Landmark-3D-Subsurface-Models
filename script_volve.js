@@ -1647,6 +1647,24 @@ let regionalContourMesh = null;
 // the regional surface sits just below the deepest survey horizon.
 const REGIONAL_DEPTH_OFFSET = 100;
 
+// 4-neighbour Laplacian smoothing on a flat W×H Float32Array.
+// returns a new array; does not mutate input.
+function _laplacianSmoothGrid(arr, w, h) {
+    const out = new Float32Array(arr);
+    for (let row = 0; row < h; row++) {
+        for (let col = 0; col < w; col++) {
+            const i = row * w + col;
+            let sum = 0, cnt = 0;
+            if (col > 0)     { sum += arr[i - 1]; cnt++; }
+            if (col < w - 1) { sum += arr[i + 1]; cnt++; }
+            if (row > 0)     { sum += arr[i - w]; cnt++; }
+            if (row < h - 1) { sum += arr[i + w]; cnt++; }
+            if (cnt > 0) out[i] = arr[i] * 0.5 + (sum / cnt) * 0.5;
+        }
+    }
+    return out;
+}
+
 async function loadRegionalHorizon() {
     let centerX = 0, centerY = 0;
     modelGroup.children.forEach(m => {
@@ -1715,24 +1733,9 @@ async function loadRegionalHorizon() {
     // the "big polygon" look even with a dense grid).  Geographic positions
     // (rxArr, rzArr) are NOT touched — only depth is smoothed.
     const SMOOTH_ITERS = 4;
-    function laplacianSmooth1D(arr, w, h) {
-        const out = new Float32Array(arr);
-        for (let row = 0; row < h; row++) {
-            for (let col = 0; col < w; col++) {
-                const i = row * w + col;
-                let sum = 0, cnt = 0;
-                if (col > 0)     { sum += arr[i - 1]; cnt++; }
-                if (col < w - 1) { sum += arr[i + 1]; cnt++; }
-                if (row > 0)     { sum += arr[i - w]; cnt++; }
-                if (row < h - 1) { sum += arr[i + w]; cnt++; }
-                if (cnt > 0) out[i] = arr[i] * 0.5 + (sum / cnt) * 0.5;
-            }
-        }
-        return out;
-    }
     for (let pass = 0; pass < SMOOTH_ITERS; pass++) {
-        const sc = laplacianSmooth1D(zConform, W, H);
-        const sp = laplacianSmooth1D(zPoly,    W, H);
+        const sc = _laplacianSmoothGrid(zConform, W, H);
+        const sp = _laplacianSmoothGrid(zPoly,    W, H);
         for (let i = 0; i < N; i++) { zConform[i] = sc[i]; zPoly[i] = sp[i]; }
     }
 
@@ -1765,6 +1768,16 @@ async function loadRegionalHorizon() {
     regionalMesh.userData.zConform = zConform;
     regionalMesh.userData.zPoly    = zPoly;
     regionalMesh.userData.distArr  = distArr;
+
+    // ── Pre-compute the "prior" surface: heavily-smoothed version of the fitted
+    // positions, used when params.regionalFitToBase is false.
+    // We smooth the initial Y values (not zPoly which is nearly flat at view scale)
+    // so the prior surface stays at the right depth while looking clearly softer.
+    let yPrior = new Float32Array(N);
+    for (let i = 0; i < N; i++) yPrior[i] = pos.getY(i);
+    for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
+    regionalMesh.userData.yPrior = yPrior;
+
     modelGroup.add(regionalMesh);
 
     // ── Regional contour / topology overlay ──────────────────────────────────
@@ -1806,13 +1819,14 @@ function applyRegionalBlend(blendKm) {
     for (let i = 0; i < pos.count; i++) {
         let t;
         if (!params.regionalFitToBase) {
-            // "Prior" mode: ignore survey conformation entirely, use smooth
-            // polynomial regional surface — the shape before survey data updated it.
-            t = 1;
-        } else {
-            t = distArr[i] / blendM;
-            t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
+            // "Prior" mode: use the pre-smoothed surface stored at load time.
+            // This is a heavily Laplacian-smoothed version of the fitted positions,
+            // so it sits at the right depth but looks clearly softer/rounder.
+            pos.setXYZ(i, rxArr[i], regionalMesh.userData.yPrior[i], rzArr[i]);
+            continue;
         }
+        t = distArr[i] / blendM;
+        t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
         pos.setXYZ(i, rxArr[i], -((1 - t) * zConform[i] + t * zPoly[i]) - REGIONAL_DEPTH_OFFSET, rzArr[i]);
     }
     pos.needsUpdate = true;
