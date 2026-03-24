@@ -791,7 +791,9 @@ const _paramsDefaults = {
     regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
     regionalWireframe: false,  // wireframe overlay for regional surface
     regionalFitToBase: true,   // true = conform to Norne Base survey; false = smooth polynomial prior
-    regionalBlendKm: 8,        // km beyond survey edge over which to blend conform→poly
+    regionalBlendKm: 50,       // km beyond survey edge over which to blend conform→poly
+    regionalTopologyFalloff: true, // enable/disable topology falloff on prior surface
+    regionalFitBlendKm: 5,     // km beyond mesh edge for fit-mode transition to prior
     regionalShowContours: false,
     regionalContourInterval: 50,
     regionalContourThickness: 1.2,
@@ -1643,9 +1645,7 @@ const FAULT_PALETTES = {
 // ── Regional Åre Fm context horizon ──────────────────────────────────────────
 let regionalMesh = null;
 let regionalContourMesh = null;
-// Vertical offset (scene units = metres) applied to every regional vertex so
-// the regional surface sits just below the deepest survey horizon.
-const REGIONAL_DEPTH_OFFSET = 100;
+
 
 // 4-neighbour Laplacian smoothing on a flat W×H Float32Array.
 // returns a new array; does not mutate input.
@@ -1676,8 +1676,17 @@ async function loadRegionalHorizon() {
     catch(e) { console.warn('Regional horizon CSV not found'); return null; }
 
     const lines = text.trim().split('\n');
-    // ── Source grid (matches CSV resolution) ────────────────────────────────
-    const SRC_W = 51, SRC_H = 51;
+    // ── Source grid (auto-detect dimensions from CSV IL/XL ranges) ───────────
+    let maxIL = 0, maxXL = 0;
+    const dataLines = lines.slice(1);
+    dataLines.forEach(l => {
+        const p = l.split(',');
+        const il = parseInt(p[0]), xl = parseInt(p[1]);
+        if (il > maxIL) maxIL = il;
+        if (xl > maxXL) maxXL = xl;
+    });
+    const SRC_W = maxIL + 1, SRC_H = maxXL + 1;
+    console.log(`Regional CSV grid: ${SRC_W}×${SRC_H}`);
     const SRC_N = SRC_W * SRC_H;
     const src_rx      = new Float32Array(SRC_N);
     const src_rz      = new Float32Array(SRC_N);
@@ -1685,7 +1694,7 @@ async function loadRegionalHorizon() {
     const src_zPoly    = new Float32Array(SRC_N);
     const src_dist     = new Float32Array(SRC_N);
 
-    lines.slice(1).forEach(l => {
+    dataLines.forEach(l => {
         const p = l.split(',');
         const il = parseInt(p[0]), xl = parseInt(p[1]);
         const idx = xl * SRC_W + il;
@@ -1696,13 +1705,17 @@ async function loadRegionalHorizon() {
         src_dist[idx]     = parseFloat(p[6]);
     });
 
-    // ── Bilinear upsample 51×51 → 401×401 (8× density) ──────────────────────
-    // Each output cell (i,j) maps to source position (i/8, j/8) in [0..50]×[0..50].
-    const W = 401, H = 401;
+    // ── Bilinear upsample SRC → render grid ─────────────────────────────────
+    // Target ~400 cells on the longest axis, scaling proportionally.
+    const UPSAMPLE_TARGET = 401;
+    const upsampleFactor = Math.max(1, Math.round(UPSAMPLE_TARGET / Math.max(SRC_W, SRC_H)));
+    const W = (SRC_W - 1) * upsampleFactor + 1;
+    const H = (SRC_H - 1) * upsampleFactor + 1;
+    console.log(`Regional upsample: ${SRC_W}×${SRC_H} → ${W}×${H} (${upsampleFactor}× factor)`);
     const N = W * H;
     const rxArr    = new Float32Array(N);
     const rzArr    = new Float32Array(N);
-    const zConform = new Float32Array(N);
+    const zConformRaw = new Float32Array(N); // Renamed from zConform, will be updated by sampling
     const zPoly    = new Float32Array(N);
     const distArr  = new Float32Array(N);
 
@@ -1722,36 +1735,23 @@ async function loadRegionalHorizon() {
             const idx = j * W + i;
             rxArr[idx]    = bilerp(src_rx,       SRC_W, SRC_H, fi, fj);
             rzArr[idx]    = bilerp(src_rz,       SRC_W, SRC_H, fi, fj);
-            zConform[idx] = bilerp(src_zConform, SRC_W, SRC_H, fi, fj);
+            zConformRaw[idx] = bilerp(src_zConform, SRC_W, SRC_H, fi, fj); // Use zConformRaw here
             zPoly[idx]    = bilerp(src_zPoly,    SRC_W, SRC_H, fi, fj);
             distArr[idx]  = bilerp(src_dist,     SRC_W, SRC_H, fi, fj);
         }
     }
 
-    // ── Laplacian smooth the depth arrays so intermediate vertices get genuine
-    // curvature rather than lying on flat bilinear patches (which is what causes
-    // the "big polygon" look even with a dense grid).  Geographic positions
-    // (rxArr, rzArr) are NOT touched — only depth is smoothed.
-    // Save raw (pre-smoothing) zConform values — used for precise Norne Base
-    // fitting in applyRegionalBlend when params.regionalFitToBase is true.
-    const zConformRaw = new Float32Array(zConform);
-    const SMOOTH_ITERS = 4;
-    for (let pass = 0; pass < SMOOTH_ITERS; pass++) {
-        const sc = _laplacianSmoothGrid(zConform, W, H);
-        const sp = _laplacianSmoothGrid(zPoly,    W, H);
-        for (let i = 0; i < N; i++) { zConform[i] = sc[i]; zPoly[i] = sp[i]; }
-    }
-
     const geo = new THREE.PlaneGeometry(1, 1, W - 1, H - 1);
     const pos = geo.attributes.position;
 
-    // Initial blend
+    // Initial positions from CSV data (gives nice topology features).
+    // CSV zConformRaw has real geological structure inside the survey rectangle
+    // which creates the visible bumps and features in prior mode.
     const blendM = params.regionalBlendKm * 1000;
     for (let i = 0; i < N; i++) {
         let t = distArr[i] / (blendM || 1);
         t = Math.min(t, 1); t = t * t * (3 - 2 * t); // smoothstep
-        // Offset downward so the regional layer sits below the deepest survey horizon.
-        const z = -(1 - t) * zConform[i] - t * zPoly[i] - REGIONAL_DEPTH_OFFSET;
+        const z = -(1 - t) * zConformRaw[i] - t * zPoly[i];
         pos.setXYZ(i, rxArr[i], z, rzArr[i]);
     }
     pos.needsUpdate = true;
@@ -1766,65 +1766,108 @@ async function loadRegionalHorizon() {
     regionalMesh = new THREE.Mesh(geo, mat);
     regionalMesh.userData.isRegional = true;
     regionalMesh.userData.layerName = 'Norne Base';
-    regionalMesh.userData.rxArr    = rxArr;
-    regionalMesh.userData.rzArr    = rzArr;
-    regionalMesh.userData.zConform    = zConform;
-    regionalMesh.userData.zConformRaw = zConformRaw; // pre-smoothing, for precise fit
-    regionalMesh.userData.zPoly    = zPoly;
-    regionalMesh.userData.distArr  = distArr;
+    regionalMesh.userData.gridW        = W;
+    regionalMesh.userData.gridH        = H;
+    regionalMesh.userData.rxArr       = rxArr;
+    regionalMesh.userData.rzArr       = rzArr;
+    regionalMesh.userData.zConformRaw = zConformRaw;
+    regionalMesh.userData.zPoly       = zPoly;
+    regionalMesh.userData.csvDistArr  = distArr;
 
-    // ── Pre-compute the "prior" surface: heavily-smoothed version of the fitted
-    // positions, used when params.regionalFitToBase is false.
-    // Features are shifted ~25% of the field width outward from the field
-    // centroid, so the prior hill sits visibly away from the survey boundary.
-
-    // Step 1: find the field centroid in 401×401 grid coordinates
-    let fieldSumI = 0, fieldSumJ = 0, fieldCount = 0;
-    for (let j = 0; j < H; j++) {
-        for (let i = 0; i < W; i++) {
-            if (distArr[j * W + i] < 500) { fieldSumI += i; fieldSumJ += j; fieldCount++; }
-        }
-    }
-    const fCentI = fieldCount > 0 ? fieldSumI / fieldCount : W / 2;
-    const fCentJ = fieldCount > 0 ? fieldSumJ / fieldCount : H / 2;
-
-    // Step 2: estimate field half-width in grid cells (use inline span of interior verts)
-    let minFI = W, maxFI = 0;
-    for (let j = 0; j < H; j++) {
-        for (let i = 0; i < W; i++) {
-            if (distArr[j * W + i] < 500) { if (i < minFI) minFI = i; if (i > maxFI) maxFI = i; }
-        }
-    }
-    const fieldWidthCells = Math.max(maxFI - minFI, 1);
-    const PRIOR_SHIFT = Math.round(fieldWidthCells * 0.25); // 25% of field width
-
-    // Step 3: seed yPrior by sampling Y values shifted inward toward the field centroid
-    // (sampling from i - di*shift means features appear at i + di*shift → outward)
-    const yPriorSeed = new Float32Array(N);
-    for (let j = 0; j < H; j++) {
-        for (let i = 0; i < W; i++) {
-            let di = i - fCentI, dj = j - fCentJ;
-            const mag = Math.sqrt(di * di + dj * dj) || 1;
-            di /= mag; dj /= mag;
-            const si = Math.max(0, Math.min(W - 1, Math.round(i - di * PRIOR_SHIFT)));
-            const sj = Math.max(0, Math.min(H - 1, Math.round(j - dj * PRIOR_SHIFT)));
-            yPriorSeed[j * W + i] = pos.getY(sj * W + si);
-        }
-    }
-
-    // Step 4: apply heavy Laplacian smoothing to the shifted seed (for exterior)
-    let yPrior = yPriorSeed;
-    for (let pass = 0; pass < 16; pass++) yPrior = _laplacianSmoothGrid(yPrior, W, H);
-    regionalMesh.userData.yPrior = yPrior;
-
-    // yPriorSmooth: the smooth regional surface the user sees when unchecked.
-    // 16-pass Laplacian smooth of the initial Norne-derived mesh positions.
-    // Fit mode delta = (-zConformRaw - offset) - yPriorSmooth:  the fine-scale
-    // horizon detail that 16 passes of smoothing removed — visible and real.
+    // yPriorSmooth: the surface shown when "Fit to Norne Base" is unchecked.
+    // Built from the CSV-based initial positions (nice topology features).
     let yPriorSmooth = new Float32Array(N);
     for (let i = 0; i < N; i++) yPriorSmooth[i] = pos.getY(i);
-    for (let pass = 0; pass < 16; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
+    for (let pass = 0; pass < 2; pass++) yPriorSmooth = _laplacianSmoothGrid(yPriorSmooth, W, H);
     regionalMesh.userData.yPriorSmooth = yPriorSmooth;
+
+    // ── Runtime sampling of the actual Norne Base horizon mesh ───────────────
+    // Produces separate fitConformDepth / fitDistArr for fit mode only.
+    // The prior surface keeps its CSV-derived topology untouched.
+    // Initialize fitConformDepth = -yPriorSmooth so that outside the mesh
+    // footprint, the fit blend is identity (conformedY = yPriorSmooth → no dip).
+    const fitConformDepth = new Float32Array(N);
+    const fitDistArr      = new Float32Array(N);
+    for (let i = 0; i < N; i++) { fitConformDepth[i] = -yPriorSmooth[i]; fitDistArr[i] = Infinity; }
+
+    const norneBaseMesh = modelGroup.children.find(m =>
+        m.userData.isHorizon && m.userData.layerName === 'Norne Base' && !m.userData.isContour);
+    if (norneBaseMesh) {
+        const hPos = norneBaseMesh.geometry.attributes.position;
+        const hIdx = norneBaseMesh.geometry.index;
+        const usedVerts = new Set();
+        if (hIdx) { const arr = hIdx.array; for (let i = 0; i < arr.length; i++) usedVerts.add(arr[i]); }
+        const validVerts = [];
+        for (let i = 0; i < hPos.count; i++) {
+            if (!usedVerts.has(i)) continue;
+            validVerts.push({ x: hPos.getX(i), y: hPos.getY(i), z: hPos.getZ(i) });
+        }
+        console.log(`Norne Base mesh: ${validVerts.length} valid vertices for runtime sampling`);
+
+        // Spatial hash (200m buckets)
+        const BUCKET = 200;
+        const hash = {};
+        for (const v of validVerts) {
+            const k = `${Math.round(v.x / BUCKET)},${Math.round(v.z / BUCKET)}`;
+            (hash[k] || (hash[k] = [])).push(v);
+        }
+
+        // Phase 1: seed cells near mesh vertices
+        const SEED_RADIUS = 3;
+        const SEED_THRESH2 = 300 * 300;
+        const seedMask = new Uint8Array(N);
+        for (let i = 0; i < N; i++) {
+            const rx = rxArr[i], rz = rzArr[i];
+            const bx = Math.round(rx / BUCKET), bz = Math.round(rz / BUCKET);
+            let minDist2 = Infinity, nearestY = 0;
+            for (let dx = -SEED_RADIUS; dx <= SEED_RADIUS; dx++) {
+                for (let dz = -SEED_RADIUS; dz <= SEED_RADIUS; dz++) {
+                    const bucket = hash[`${bx + dx},${bz + dz}`];
+                    if (!bucket) continue;
+                    for (const v of bucket) {
+                        const ddx = rx - v.x, ddz = rz - v.z;
+                        const d2 = ddx * ddx + ddz * ddz;
+                        if (d2 < minDist2) { minDist2 = d2; nearestY = v.y; }
+                    }
+                }
+            }
+            if (minDist2 <= SEED_THRESH2) {
+                seedMask[i] = 1;
+                fitConformDepth[i] = -nearestY; // actual mesh depth (positive down)
+                fitDistArr[i] = 0;
+            }
+        }
+
+        // Phase 2: BFS flood fill — propagate distance AND depth from seeds.
+        // Non-seed cells inherit the nearest seed's mesh depth, so the fit
+        // blend can smoothly transition from mesh depth → yPriorSmooth.
+        const gridDx = Math.abs(rxArr[1] - rxArr[0]) || 125;
+        const queue = new Int32Array(4 * N);
+        let qHead = 0, qTail = 0;
+        for (let i = 0; i < N; i++) if (seedMask[i]) queue[qTail++] = i;
+        while (qHead < qTail) {
+            const idx = queue[qHead++];
+            const ci = idx % W, cj = (idx - ci) / W;
+            const newDist = fitDistArr[idx] + gridDx;
+            const depth  = fitConformDepth[idx];
+            const tryNeighbour = (nIdx) => {
+                if (newDist < fitDistArr[nIdx]) {
+                    fitDistArr[nIdx] = newDist;
+                    fitConformDepth[nIdx] = depth; // inherit nearest seed's depth
+                    queue[qTail++] = nIdx;
+                }
+            };
+            if (ci > 0)     tryNeighbour(idx - 1);
+            if (ci < W - 1) tryNeighbour(idx + 1);
+            if (cj > 0)     tryNeighbour(idx - W);
+            if (cj < H - 1) tryNeighbour(idx + W);
+        }
+        let seedCount = 0; for (let i = 0; i < N; i++) if (seedMask[i]) seedCount++;
+        console.log(`Regional conform: ${seedCount} seed cells, BFS distance field complete`);
+    }
+
+    regionalMesh.userData.fitConformDepth = fitConformDepth;
+    regionalMesh.userData.fitDistArr      = fitDistArr;
 
     modelGroup.add(regionalMesh);
 
@@ -1857,7 +1900,7 @@ async function loadRegionalHorizon() {
 //   25 = blend extends all the way to the 25km edge of the regional surface
 function applyRegionalBlend(blendKm) {
     if (!regionalMesh) { console.warn('applyRegionalBlend: no regionalMesh'); return; }
-    const { rxArr, rzArr, distArr, yPriorSmooth, zConformRaw } = regionalMesh.userData;
+    const { rxArr, rzArr, yPriorSmooth, fitConformDepth, fitDistArr } = regionalMesh.userData;
     const pos = regionalMesh.geometry.attributes.position;
 
     if (!params.regionalFitToBase) {
@@ -1867,28 +1910,18 @@ function applyRegionalBlend(blendKm) {
             pos.setXYZ(i, rxArr[i], yPriorSmooth[i], rzArr[i]);
         }
     } else {
-        // ── Fit mode: delta = zConformRaw - zPoly (structural relief) ──────────
-        // Prior position:  -zPoly[i] - 100m  (regional polynomial trend)
-        // Fit target:      -zConformRaw[i] - 100m  (actual Norne Base depth)
-        // Delta represents the local structural departure of the Norne Base
-        // from the polynomial regional trend. This is non-trivial — the Norne
-        // dome can be 100-300m above the regional trend in the crest area.
-        const { zConformRaw } = regionalMesh.userData;
-        const blendM = Math.max(blendKm * 1000, 1);
-        const N = pos.count;
-        const W = REGIONAL_W, H = REGIONAL_H;
+        // ── Fit mode: start from the prior surface and pull toward true depth ──
+        // Inside the mesh footprint (fitDistArr≈0) → snap to actual mesh depth.
+        // Outside (fitDistArr large) → stays at yPriorSmooth (prior surface).
+        // fitDistArr comes from BFS on the actual mesh footprint (smooth everywhere).
+        const falloffM = Math.max(params.regionalFitBlendKm * 1000, 1);
 
-        // Compute delta for every vertex and apply immediately.
-        // zConformRaw is already smooth (bilinear upsampling from 51×51 CSV).
-        // Do NOT smooth the delta — the exterior vertices have delta≈0 (zPoly≈zConformRaw
-        // outside survey), so Laplacian passes bleed those zeros inward and flatten
-        // the interior signal to near-zero.
         for (let i = 0; i < pos.count; i++) {
-            let t = Math.min(distArr[i] / blendM, 1);
-            t = t * t * (3 - 2 * t);
-            const weight = 1 - t;
-            const delta = (-zConformRaw[i] - REGIONAL_DEPTH_OFFSET) - yPriorSmooth[i];
-            pos.setXYZ(i, rxArr[i], yPriorSmooth[i] + weight * delta, rzArr[i]);
+            let t = Math.min(fitDistArr[i] / falloffM, 1);
+            t = 1 - (1 - t) * (1 - t); // quadratic ease-out
+            const conformedY = -fitConformDepth[i];
+            const priorY     = yPriorSmooth[i];
+            pos.setXYZ(i, rxArr[i], conformedY * (1 - t) + priorY * t, rzArr[i]);
         }
     }
 
@@ -1897,14 +1930,43 @@ function applyRegionalBlend(blendKm) {
     smoothRegionalContourY(params.regionalContourSmooth);
 }
 
+// Rebuild the prior surface (yPriorSmooth) when the topology falloff slider changes.
+// Recomputes the CSV-based blend with the new falloff, then re-applies fit mode if active.
+function rebuildRegionalPrior() {
+    if (!regionalMesh) return;
+    const { rxArr, rzArr, zConformRaw, zPoly, csvDistArr } = regionalMesh.userData;
+    const pos = regionalMesh.geometry.attributes.position;
+    const N = pos.count;
+    const blendM = params.regionalBlendKm * 1000;
+    const yPriorSmooth = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+        if (params.regionalTopologyFalloff) {
+            // Distance-based blend: topology near survey, smooth trend far away
+            let t = csvDistArr[i] / (blendM || 1);
+            t = Math.min(t, 1); t = t * t * (3 - 2 * t);
+            yPriorSmooth[i] = -(1 - t) * zConformRaw[i] - t * zPoly[i];
+        } else {
+            // No falloff: use full topology (zConformRaw) everywhere
+            yPriorSmooth[i] = -zConformRaw[i];
+        }
+    }
+    regionalMesh.userData.yPriorSmooth = yPriorSmooth;
+    // Apply 2 passes of Laplacian smoothing before fitting
+    for (let pass = 0; pass < 2; pass++) {
+        regionalMesh.userData.yPriorSmooth = _laplacianSmoothGrid(regionalMesh.userData.yPriorSmooth, regionalMesh.userData.gridW, regionalMesh.userData.gridH);
+    }
+    applyRegionalBlend(params.regionalBlendKm);
+}
+
+
 // Apply N passes of 4-neighbour Laplacian smoothing (Y channel only) to the
 // regional contour mesh, then clip the index buffer so that only triangles
 // OUTSIDE the survey footprint (distArr > 0) are rendered.
-const REGIONAL_W = 401, REGIONAL_H = 401;
+// Regional grid dimensions are stored dynamically on regionalMesh.userData.gridW / .gridH
 function smoothRegionalContourY(iterations) {
     if (!regionalContourMesh || !regionalMesh) return;
     const srcPos = regionalMesh.geometry.attributes.position;
-    const distArr = regionalMesh.userData.distArr;
+    const distArr = regionalMesh.userData.csvDistArr;
     const N = srcPos.count; // 51*51 = 2601
 
     // Start from the blended (non-smoothed) Y values
@@ -1912,7 +1974,7 @@ function smoothRegionalContourY(iterations) {
     for (let i = 0; i < N; i++) yBuf[i] = srcPos.getY(i);
 
     // Laplacian passes on the regular 51x51 grid
-    const W = REGIONAL_W, H = REGIONAL_H;
+    const W = regionalMesh.userData.gridW, H = regionalMesh.userData.gridH;
     for (let pass = 0; pass < iterations; pass++) {
         const next = new Float32Array(yBuf);
         for (let row = 0; row < H; row++) {
@@ -1937,9 +1999,8 @@ function smoothRegionalContourY(iterations) {
     }
     cPos.needsUpdate = true;
     cGeo.computeVertexNormals();
-    // Index is unchanged — all triangles kept; the regional layer sits
-    // REGIONAL_DEPTH_OFFSET metres below the deepest horizon so the depth
-    // buffer naturally occludes it wherever survey horizon meshes exist.
+    // Index is unchanged — all triangles kept; the depth buffer naturally
+    // occludes the regional layer wherever survey horizon meshes exist.
 }
 
 
@@ -2199,8 +2260,14 @@ regionalFolder.add(params, 'regionalFitToBase').name('Fit to Norne Base')
 regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
     if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
 });
-regionalFolder.add(params, 'regionalBlendKm', 0, 25, 0.5).name('Blend Distance (km)').onChange(v => {
-    applyRegionalBlend(v);
+regionalFolder.add(params, 'regionalTopologyFalloff').name('Topology Falloff').onChange(() => {
+    rebuildRegionalPrior();
+});
+regionalFolder.add(params, 'regionalBlendKm', 0, 60, 0.5).name('Topology Falloff (km)').onChange(() => {
+    rebuildRegionalPrior();
+});
+regionalFolder.add(params, 'regionalFitBlendKm', 0.5, 15, 0.5).name('Fit Blend (km)').onChange(() => {
+    if (params.regionalFitToBase) applyRegionalBlend(params.regionalBlendKm);
 });
 regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
     if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
