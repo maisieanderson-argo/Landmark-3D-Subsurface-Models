@@ -916,11 +916,14 @@ document.head.appendChild(uiStyles);
 const uiContainer = document.createElement('div');
 uiContainer.innerHTML = `
     <!-- Preset Bar -->
-    <div class="preset-bar">
+    <div class="preset-bar" id="presetBar">
         <span>Preset:</span>
         <select id="presetSelect" class="preset-select"></select>
-        <button id="btnSave" class="icon-btn" title="Save Preset">
+        <button id="btnSave" class="icon-btn" title="Save New Preset">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+        </button>
+        <button id="btnUpdate" class="icon-btn" title="Update Current Preset">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
         </button>
         <button id="btnDelete" class="icon-btn delete" title="Delete Preset">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
@@ -958,6 +961,34 @@ document.body.appendChild(uiContainer);
 window.closeModal = (id) => {
     document.getElementById(id).style.display = 'none';
 };
+
+// ── Title click → toggle all UI for clean screenshots ────────────────────────
+let _uiHidden = false;
+document.querySelector('#ui-container h1').addEventListener('click', () => {
+    _uiHidden = !_uiHidden;
+    const guiEl  = document.querySelector('.lil-gui.root');
+    const preBar = document.getElementById('presetBar');
+    const compass = document.getElementById('compass');
+    const loading = document.getElementById('loading');
+    const title   = document.querySelector('#ui-container h1');
+    if (_uiHidden) {
+        if (guiEl)  guiEl.style.display  = 'none';
+        if (preBar) preBar.style.display = 'none';
+        if (compass) compass.style.display = 'none';
+        if (loading) loading.style.display = 'none';
+        title.style.opacity = '0.35';
+        title.style.fontSize = '0.9rem';
+        title.title = 'Click to show controls';
+    } else {
+        if (guiEl)  guiEl.style.display  = '';
+        if (preBar) preBar.style.display = '';
+        if (compass) compass.style.display = '';
+        if (loading) loading.style.display = '';
+        title.style.opacity = '';
+        title.style.fontSize = '';
+        title.title = '';
+    }
+});
 
 // ... Rest of script ...
 const PARAMS_STORAGE_KEY = 'geo_viewer_params';
@@ -1730,6 +1761,18 @@ function initPresets() {
         try { localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets)); } catch(e) {}
         updatePresetDropdown(name);
         closeModal('saveModal');
+    });
+
+    // ── Update flow (overwrite current preset) ────────────────────────────────
+    document.getElementById('btnUpdate').addEventListener('click', () => {
+        const name = document.getElementById('presetSelect').value;
+        if (name === 'Default') return alert('Cannot overwrite the Default preset.\nUse "Save" to create a new preset.');
+        savedPresets[name] = getCurrentState();
+        try { localStorage.setItem('volve_viz_presets', JSON.stringify(savedPresets)); } catch(e) {}
+        // Brief flash to confirm the update
+        const btn = document.getElementById('btnUpdate');
+        btn.style.background = '#2e7d32';
+        setTimeout(() => btn.style.background = '', 600);
     });
 
     // ── Delete flow ────────────────────────────────────────────────────────────
