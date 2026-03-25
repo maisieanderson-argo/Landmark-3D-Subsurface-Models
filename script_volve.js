@@ -828,9 +828,9 @@ function buildWellTrajectories() {
             }
             if (pts.length < 2) continue;
 
-            // Rotate Lateral 2 around its KOP junction
+            // Rotate Lateral 2/4 around its KOP junction
             if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
-                const pivot = pts[0].clone(); // KOP is the first point (for first segment) or rotate all
+                const pivot = pts[0].clone();
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -841,16 +841,39 @@ function buildWellTrajectories() {
                 }
             }
 
-            const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
-            const tubeGeo = new THREE.TubeGeometry(curve, Math.max(pts.length * 3, 16), params.wellTubeRadius, 8, false);
-            const tubeMat = new THREE.MeshPhongMaterial({
-                color: baseColor,
-                emissive: baseColor.clone().multiplyScalar(0.15),
-                shininess: 60,
-            });
-            const tube = new THREE.Mesh(tubeGeo, tubeMat);
-            tube.userData = { isWell: true, wellbore: wb.name };
-            wellGroup.add(tube);
+            if (params.wellPathStyle === 'tube') {
+                const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+                const tubeGeo = new THREE.TubeGeometry(curve, Math.max(pts.length * 3, 16), params.wellTubeRadius, 8, false);
+                const tubeMat = new THREE.MeshPhongMaterial({
+                    color: baseColor,
+                    emissive: baseColor.clone().multiplyScalar(0.15),
+                    shininess: 60,
+                });
+                const tube = new THREE.Mesh(tubeGeo, tubeMat);
+                tube.userData = { isWell: true, wellbore: wb.name };
+                wellGroup.add(tube);
+            } else {
+                // Dots mode: place spheres along the CatmullRom curve
+                const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+                const dotCount = Math.max(pts.length * 3, 20);
+                const dotGeo = new THREE.SphereGeometry(params.wellDotSize, 8, 8);
+                const dotMat = new THREE.MeshPhongMaterial({
+                    color: baseColor,
+                    emissive: baseColor.clone().multiplyScalar(0.15),
+                    shininess: 60,
+                });
+                const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
+                const dummy = new THREE.Object3D();
+                for (let d = 0; d < dotCount; d++) {
+                    const p = curve.getPointAt(d / (dotCount - 1));
+                    dummy.position.copy(p);
+                    dummy.updateMatrix();
+                    instanced.setMatrixAt(d, dummy.matrix);
+                }
+                instanced.instanceMatrix.needsUpdate = true;
+                instanced.userData = { isWell: true, wellbore: wb.name };
+                wellGroup.add(instanced);
+            }
         }
 
         // Wellhead sphere
@@ -1282,6 +1305,8 @@ const _paramsDefaults = {
     lat3Color: '#74d8c4',
     lat4Color: '#d8b774',
     wellTubeRadius: 8,                 // metres (scene units)
+    wellPathStyle: 'tube',             // 'tube' or 'dots'
+    wellDotSize: 5,                    // dot radius in metres
     wellShowTargets: true,
     showLat1Targets: true,
     showLat2Targets: true,
@@ -2685,7 +2710,9 @@ wellTrajFolder.add(params, 'showLateral3').name('Lateral 3').onChange(() => buil
 wellTrajFolder.addColor(params, 'lat3Color').name('Lat 3 Color').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'showLateral4').name('Lateral 4').onChange(() => buildWellTrajectories());
 wellTrajFolder.addColor(params, 'lat4Color').name('Lat 4 Color').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellPathStyle', ['tube', 'dots']).name('Path Style').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'wellTubeRadius', 1, 30, 1).name('Tube Radius (m)').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellDotSize', 1, 15, 0.5).name('Dot Size (m)').onChange(() => buildWellTrajectories());
 
 const wellTargetFolder = wellFolder.addFolder('Targets');
 wellTargetFolder.add(params, 'wellShowTargets').name('Show All Targets').onChange(() => buildWellTrajectories());
