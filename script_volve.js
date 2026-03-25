@@ -477,8 +477,64 @@ async function initVolveData() {
             }
         }
 
-        // Fill missing vertices from neighbours so the sheet is rectangular
-        // Enough passes to propagate across the widest gap
+        // ── Pre-compute XZ grid positions from spatial gradients ──────────────
+        // Compute average dX/dIL, dZ/dIL, dX/dXL, dZ/dXL from valid data
+        let dxDil = 0, dzDil = 0, dxDxl = 0, dzDxl = 0;
+        let cntIl = 0, cntXl = 0;
+        for (let ix = 0; ix < width - 1; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const i0 = iy * width + ix, i1 = iy * width + ix + 1;
+                if (filled[i0] && filled[i1]) {
+                    dxDil += posAttr.getX(i1) - posAttr.getX(i0);
+                    dzDil += posAttr.getZ(i1) - posAttr.getZ(i0);
+                    cntIl++;
+                }
+            }
+        }
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height - 1; iy++) {
+                const i0 = iy * width + ix, i1 = (iy + 1) * width + ix;
+                if (filled[i0] && filled[i1]) {
+                    dxDxl += posAttr.getX(i1) - posAttr.getX(i0);
+                    dzDxl += posAttr.getZ(i1) - posAttr.getZ(i0);
+                    cntXl++;
+                }
+            }
+        }
+        if (cntIl > 0) { dxDil /= cntIl; dzDil /= cntIl; }
+        if (cntXl > 0) { dxDxl /= cntXl; dzDxl /= cntXl; }
+
+        // Find a reference valid point to anchor the grid
+        let refIx = 0, refIy = 0, refX = 0, refZ = 0;
+        for (let ix = 0; ix < width && !refX; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const idx = iy * width + ix;
+                if (filled[idx]) { refIx = ix; refIy = iy; refX = posAttr.getX(idx); refZ = posAttr.getZ(idx); break; }
+            }
+        }
+
+        // Pre-fill XZ for ALL grid cells using the spatial gradient
+        const gridX = new Float32Array(width * height);
+        const gridZ = new Float32Array(width * height);
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const idx = iy * width + ix;
+                gridX[idx] = refX + (ix - refIx) * dxDil + (iy - refIy) * dxDxl;
+                gridZ[idx] = refZ + (ix - refIx) * dzDil + (iy - refIy) * dzDxl;
+            }
+        }
+
+        // Set XZ for all unfilled vertices; keep original XZ for valid data
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const idx = iy * width + ix;
+                if (!filled[idx]) {
+                    posAttr.setXYZ(idx, gridX[idx], 0, gridZ[idx]);
+                }
+            }
+        }
+
+        // Fill only Y (depth) from neighbours
         const maxPasses = Math.max(width, height);
         for (let pass = 0; pass < maxPasses; pass++) {
             let anyFilled = false;
@@ -486,33 +542,29 @@ async function initVolveData() {
                 for (let iy = 0; iy < height; iy++) {
                     const idx = iy * width + ix;
                     if (filled[idx]) continue;
-                    let sx = 0, sy = 0, sz = 0, cnt = 0;
-                    // 8-connected neighbours (including diagonals for smooth edges)
+                    let sy = 0, cnt = 0;
                     for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
                         const nx = ix + dx, ny = iy + dy;
                         if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
                         const ni = ny * width + nx;
                         if (!filled[ni]) continue;
-                        sx += posAttr.getX(ni);
                         sy += posAttr.getY(ni);
-                        sz += posAttr.getZ(ni);
                         cnt++;
                     }
                     if (cnt > 0) {
-                        posAttr.setXYZ(idx, sx / cnt, sy / cnt, sz / cnt);
+                        posAttr.setY(idx, sy / cnt);
                         filled[idx] = 1;
                         anyFilled = true;
                     }
                 }
             }
-            if (!anyFilled) break; // all holes filled
+            if (!anyFilled) break;
         }
-        // Safety: any still-unfilled vertex copies nearest filled neighbour
+        // Safety: nearest-neighbor for any remaining
         for (let ix = 0; ix < width; ix++) {
             for (let iy = 0; iy < height; iy++) {
                 const idx = iy * width + ix;
                 if (filled[idx]) continue;
-                // scan for closest filled vertex
                 for (let r = 1; r < Math.max(width, height); r++) {
                     let found = false;
                     for (let dx = -r; dx <= r && !found; dx++) {
@@ -522,7 +574,7 @@ async function initVolveData() {
                             if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
                             const ni = ny * width + nx;
                             if (!filled[ni]) continue;
-                            posAttr.setXYZ(idx, posAttr.getX(ni), posAttr.getY(ni), posAttr.getZ(ni));
+                            posAttr.setY(idx, posAttr.getY(ni));
                             filled[idx] = 1;
                             found = true;
                         }
@@ -532,34 +584,6 @@ async function initVolveData() {
             }
         }
         console.log(`Mesh built with ${validPoints} valid + ${width * height - validPoints} filled vertices`);
-
-        // Smooth only the filled (non-original) vertices to flatten curled corners
-        // Track which vertices are original data vs filled
-        const isOriginal = new Uint8Array(width * height);
-        for (let ix = 0; ix < width; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const il = h.minIL + ix * VOLVE_DECIMATE;
-                const xl = h.minXL + iy * VOLVE_DECIMATE;
-                if (h.data[`${il}_${xl}`]) isOriginal[iy * width + ix] = 1;
-            }
-        }
-        for (let pass = 0; pass < 5; pass++) {
-            for (let ix = 0; ix < width; ix++) {
-                for (let iy = 0; iy < height; iy++) {
-                    const idx = iy * width + ix;
-                    if (isOriginal[idx]) continue; // don't touch real data
-                    let sx = 0, sy = 0, sz = 0, cnt = 0;
-                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
-                        const nx = ix + dx, ny = iy + dy;
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                        const ni = ny * width + nx;
-                        sx += posAttr.getX(ni); sy += posAttr.getY(ni); sz += posAttr.getZ(ni);
-                        cnt++;
-                    }
-                    if (cnt > 0) posAttr.setXYZ(idx, sx / cnt, sy / cnt, sz / cnt);
-                }
-            }
-        }
 
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
