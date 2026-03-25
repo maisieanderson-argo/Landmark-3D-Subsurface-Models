@@ -1945,8 +1945,8 @@ function recomputeFitBlend() {
         const mesh = surveyGroup.children.find(m =>
             m.userData.isHorizon && m.userData.layerName === layerName && !m.userData.isContour);
         if (!mesh) return [];
-        surveyGroup.updateWorldMatrix(true, false);
-        const mat4 = surveyGroup.matrixWorld;
+        surveyGroup.updateMatrix();
+        const mat4 = surveyGroup.matrix;
         const rawPos = mesh.userData.rawHorizonPos;
         const hIdx = mesh.geometry.index;
         const hPosCount = rawPos.length / 3;
