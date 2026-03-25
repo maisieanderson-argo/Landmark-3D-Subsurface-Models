@@ -1097,6 +1097,7 @@ const _paramsDefaults = {
 
     faultColorMode: 'original',// 'original' | 'uniform' | 'warm' | 'cool' | 'earth' | 'mono'
     faultSingleColor: '#aaaaaa',
+    regionalVisible: true,     // master visibility toggle for the regional mesh
     regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
     regionalWireframe: false,  // wireframe overlay for regional surface
     regionalFitToBase: true,   // true = conform to Norne Base survey; false = smooth polynomial prior
@@ -1688,6 +1689,7 @@ function applyState(state) {
             smoothRegionalContourY(params.regionalContourSmooth);
         }
         if (c.userData.isRegional) {
+            c.visible = params.regionalVisible && params.regionalOpacity > 0;
             c.material.opacity = params.regionalOpacity;
             c.material.needsUpdate = true;
         }
@@ -2550,8 +2552,15 @@ regionalFolder.add(params, 'regionalFitToBase').name('Fit to Norne Base')
     .onChange(() => { recomputeFitBlend(); applyRegionalBlend(params.regionalBlendKm); });
 regionalFolder.add(params, 'regionalFitToVolve').name('Fit to Hugin Fm Base')
     .onChange(() => { recomputeFitBlend(); applyRegionalBlend(params.regionalBlendKm); });
-regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
-    if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
+regionalFolder.add(params, 'regionalVisible').name('Show Surface').onChange(v => {
+    if (regionalMesh) { regionalMesh.visible = v && params.regionalOpacity > 0; }
+});
+regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Surface Opacity').onChange(v => {
+    if (regionalMesh) {
+        regionalMesh.material.opacity = v;
+        regionalMesh.visible = params.regionalVisible && v > 0;
+        regionalMesh.material.needsUpdate = true;
+    }
 });
 regionalFolder.add(params, 'regionalTopologyFalloff').name('Topology Falloff').onChange(() => {
     rebuildRegionalPrior();
