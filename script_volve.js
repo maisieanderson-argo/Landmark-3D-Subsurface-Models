@@ -874,9 +874,11 @@ function buildWellTrajectories() {
             });
             const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
             const dummy = new THREE.Object3D();
+            const yCompensation = 1 / (params.zScale || 1);
             for (let d = 0; d < dotCount; d++) {
                 const p = curve.getPointAt(d / (dotCount - 1));
                 dummy.position.copy(p);
+                dummy.scale.set(1, yCompensation, 1);
                 dummy.updateMatrix();
                 instanced.setMatrixAt(d, dummy.matrix);
             }
