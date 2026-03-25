@@ -1283,8 +1283,6 @@ const _paramsDefaults = {
     wellShowTargets: true,
     showLat1Targets: true,
     showLat2Targets: true,
-    showLat3Targets: true,
-    showLat4Targets: true,
     wellTargetColor: '#3ad994',
     wellTargetSize: 50,                // metres (scene units)
     wellTargetOpacity: 0.25,
@@ -2697,8 +2695,6 @@ const wellTargetFolder = wellFolder.addFolder('Targets');
 wellTargetFolder.add(params, 'wellShowTargets').name('Show All Targets').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'showLat1Targets').name('Lat 1 Targets').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'showLat2Targets').name('Lat 2 Targets').onChange(() => buildWellTrajectories());
-wellTargetFolder.add(params, 'showLat3Targets').name('Lat 3 Targets').onChange(() => buildWellTrajectories());
-wellTargetFolder.add(params, 'showLat4Targets').name('Lat 4 Targets').onChange(() => buildWellTrajectories());
 wellTargetFolder.addColor(params, 'wellTargetColor').name('Color').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'wellTargetSize', 10, 200, 5).name('Size (m)').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity').onChange(() => buildWellTrajectories());
