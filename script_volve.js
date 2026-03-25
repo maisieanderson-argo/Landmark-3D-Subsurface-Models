@@ -487,8 +487,8 @@ async function initVolveData() {
                     const idx = iy * width + ix;
                     if (filled[idx]) continue;
                     let sx = 0, sy = 0, sz = 0, cnt = 0;
-                    // 4-connected neighbours
-                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                    // 8-connected neighbours (including diagonals for smooth edges)
+                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
                         const nx = ix + dx, ny = iy + dy;
                         if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
                         const ni = ny * width + nx;
