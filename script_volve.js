@@ -823,12 +823,20 @@ function buildWellTrajectories() {
 const uiStyles = document.createElement('style');
 uiStyles.textContent = `
     .preset-bar {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        z-index: 100;
         display: flex;
         gap: 8px;
         align-items: center;
         color: #eee;
         font-family: sans-serif;
         font-size: 13px;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 8px 14px;
+        border-radius: 8px;
+        backdrop-filter: blur(5px);
     }
     .preset-select {
         background: #333;
@@ -962,33 +970,44 @@ window.closeModal = (id) => {
     document.getElementById(id).style.display = 'none';
 };
 
-// ── Title click → toggle all UI for clean screenshots ────────────────────────
+// ── Title click → hide all UI for clean screenshots ─────────────────────────
+// Click the title to enter screenshot mode (all UI hidden).
+// Click anywhere on the canvas to exit screenshot mode and restore UI.
 let _uiHidden = false;
-document.querySelector('#ui-container h1').addEventListener('click', () => {
-    _uiHidden = !_uiHidden;
-    const guiEl  = document.querySelector('.lil-gui.root');
-    const preBar = document.getElementById('presetBar');
-    const compass = document.getElementById('compass');
+
+function hideAllUI() {
+    _uiHidden = true;
+    const guiEl   = document.querySelector('.lil-gui.root');
+    const preBar  = document.getElementById('presetBar');
+    const compass = document.getElementById('compass-hud');
     const loading = document.getElementById('loading');
     const title   = document.querySelector('#ui-container h1');
-    if (_uiHidden) {
-        if (guiEl)  guiEl.style.display  = 'none';
-        if (preBar) preBar.style.display = 'none';
-        if (compass) compass.style.display = 'none';
-        if (loading) loading.style.display = 'none';
-        title.style.opacity = '0.35';
-        title.style.fontSize = '0.9rem';
-        title.title = 'Click to show controls';
-    } else {
-        if (guiEl)  guiEl.style.display  = '';
-        if (preBar) preBar.style.display = '';
-        if (compass) compass.style.display = '';
-        if (loading) loading.style.display = '';
-        title.style.opacity = '';
-        title.style.fontSize = '';
-        title.title = '';
-    }
-});
+    if (guiEl)   guiEl.style.display   = 'none';
+    if (preBar)  preBar.style.display  = 'none';
+    if (compass) compass.style.display = 'none';
+    if (loading) loading.style.display = 'none';
+    if (title)   title.style.display   = 'none';
+
+    // One-shot click listener on the canvas to restore UI
+    const canvas = document.querySelector('#canvas-container canvas') || document.getElementById('canvas-container');
+    canvas.addEventListener('click', showAllUI, { once: true });
+}
+
+function showAllUI() {
+    _uiHidden = false;
+    const guiEl   = document.querySelector('.lil-gui.root');
+    const preBar  = document.getElementById('presetBar');
+    const compass = document.getElementById('compass-hud');
+    const loading = document.getElementById('loading');
+    const title   = document.querySelector('#ui-container h1');
+    if (guiEl)   guiEl.style.display   = '';
+    if (preBar)  preBar.style.display  = '';
+    if (compass) compass.style.display = '';
+    if (loading) loading.style.display = '';
+    if (title)   title.style.display   = '';
+}
+
+document.querySelector('#ui-container h1').addEventListener('click', hideAllUI);
 
 // ... Rest of script ...
 const PARAMS_STORAGE_KEY = 'geo_viewer_params';
@@ -1691,6 +1710,14 @@ function applyState(state) {
         seismicPanel.material.opacity = params.seismicPanelOpacity;
         seismicPanel.material.needsUpdate = true;
     }
+
+    // Survey group positions (Norne + Volve)
+    if (typeof applyNorneSurveyOffset === 'function') applyNorneSurveyOffset();
+    if (typeof applyVolveSurveyOffset === 'function') applyVolveSurveyOffset();
+
+    // Well group position + trajectory rebuild
+    if (typeof applyWellOffset === 'function') applyWellOffset();
+    if (typeof buildWellTrajectories === 'function') buildWellTrajectories();
 
     // 5. Restore camera viewpoint (only present in states saved after this fix)
     if (state.camera) {
