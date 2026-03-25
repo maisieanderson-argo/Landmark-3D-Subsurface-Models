@@ -69,6 +69,24 @@ scene.add(bottomLight);
 const modelGroup = new THREE.Group();
 scene.add(modelGroup);
 
+// Norne survey sub-group (horizons, faults, wells, bbox, seismic)
+// Offset this group to reposition the Norne survey within the regional context
+const norneSurveyGroup = new THREE.Group();
+modelGroup.add(norneSurveyGroup);
+
+// Volve survey sub-group
+const volveSurveyGroup = new THREE.Group();
+modelGroup.add(volveSurveyGroup);
+
+// Well trajectories sub-group
+const wellGroup = new THREE.Group();
+modelGroup.add(wellGroup);
+
+// Helper: iterate meshes from BOTH survey groups (for survey-spanning operations)
+function allSurveyChildren() {
+    return [...norneSurveyGroup.children, ...volveSurveyGroup.children];
+}
+
 // Loading UI
 const loadingEl = document.getElementById('loading');
 function updateLoading(msg) {
@@ -504,7 +522,8 @@ async function initVolveData() {
         mesh.userData.centerY = centerY;
         // Cache raw (unperturbed) vertex positions for the texture slider
         mesh.userData.rawHorizonPos = Float32Array.from(geometry.attributes.position.array);
-        modelGroup.add(mesh);
+        mesh.userData.survey = 'volve';
+        volveSurveyGroup.add(mesh);
 
 
         // Create Contour Overlay
@@ -513,68 +532,291 @@ async function initVolveData() {
         cMesh.renderOrder = 1; // Force rendering after the terrain to fix transparency issues
         cMesh.userData.isContour = true;
         cMesh.userData.layerName = h.name; // Also tag contours so they hide with layer
-        modelGroup.add(cMesh);
+        cMesh.userData.survey = 'volve';
+        volveSurveyGroup.add(cMesh);
     });
 
-    // 3. Center Camera
-    const box = new THREE.Box3().setFromObject(modelGroup);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-
-    console.log("Model Bounding Box:", box);
-    console.log("Model Center:", center);
-    console.log("Model Size:", size);
-
-    // DYNAMIC LIGHTING
-    // Center the light directly over the model
-    if (mainLight) scene.remove(mainLight);
-    mainLight = new THREE.DirectionalLight(0xffffff, 1.15);
-    // Position high above center
-    const lightHeight = Math.max(size.x, size.z) * 2;
-    mainLight.position.set(center.x, center.y + lightHeight, center.z);
-    mainLight.target.position.copy(center);
-    scene.add(mainLight);
-    scene.add(mainLight.target);
-
-    // DYNAMIC CAMERA POSITIONING
-    // Based on user's preferred guidepost:
-    // Target: (3847.87, -3407.03, 82.23)
-    // Position: (2420.21, -826.12, -5492.54)
-    // Direction Vector = Position - Target = (-1427.66, 2580.91, -5574.77)
-
-    const viewVector = new THREE.Vector3(-1427.66, 2580.91, -5574.77).normalize();
-    const maxDim = Math.max(size.x, size.y, size.z);
-
-    // New distance is approx 6300m for model size 8200m -> 0.77x
-    const viewDistance = maxDim * 0.77;
-
-    // Set Target to Model Center, but offset DOWN to move model UP on screen
-    const targetOffset = new THREE.Vector3(0, -maxDim * 0.2, 0);
-    controls.target.copy(center).add(targetOffset);
-
-    // Set Position relative to Center
-    const cameraPos = controls.target.clone().add(viewVector.multiplyScalar(viewDistance));
-    camera.position.copy(cameraPos);
-
-    camera.near = 10;
-    camera.far = viewDistance * 20;
-    camera.updateProjectionMatrix();
-
-    console.log("Camera Position (Dynamic):", camera.position);
-    console.log("Camera Near/Far:", camera.near, camera.far);
-
-    // Initialize Layer Controls
+    // Initialize Volve Layer Controls
     initLayerControls(validHorizons);
 
-    // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
-    // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
-    // This is the canonical "restore from localStorage" step — do not remove.
-    applyState(getCurrentState());
-
-    // Initialize Presets (Capture Default)
-    initPresets();
-
+    console.log('Volve data loaded — overlaid on Norne regional context');
+    // Apply depth colormap to Volve horizons
+    updateColoring();
     hideLoading();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WELL TRAJECTORIES & TARGETS
+// Ported from seismic-viewer/src/wellPlan.ts — Lateral 1 + 2
+// ═══════════════════════════════════════════════════════════════
+
+const WELL_SURFACE_NORTHING = 12146030.14; // ft
+const WELL_SURFACE_EASTING  = 2564557.08;  // ft
+const FT_TO_M = 0.3048;
+
+// Lateral 1 — kicks off south-west, turns due west
+const LATERAL1_TURN_POINTS = [
+    { sectionType: 'Tie Line',      md: 0.0,     inc: 0.00,  azi: 0.00,   tvd: 0.0,    northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
+    { sectionType: 'Straight MD',   md: 2000.0,  inc: 0.00,  azi: 0.00,   tvd: 2000.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
+    { sectionType: 'OPT AL DLS',    md: 2885.2,  inc: 50.54, azi: 215.50, tvd: 2774.8, northing: 12145732.38, easting: 2564344.85, target: '' },
+    { sectionType: 'Hold',          md: 3050.6,  inc: 50.54, azi: 215.50, tvd: 2879.8, northing: 12145628.47, easting: 2564270.52, target: '' },
+    { sectionType: 'Build + Turn',  md: 3315.5,  inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145538.01, easting: 2564064.95, target: 'LP1' },
+    { sectionType: 'Lateral',       md: 13359.0, inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145537.99, easting: 2554222.58, target: 'BHL' },
+];
+
+// Lateral 2 (Sidetrack) — branches from KOP at 2000 ft, builds S
+const LATERAL2_TURN_POINTS = [
+    { sectionType: 'KOP Junction',  md: 2000.0,  inc: 0.00,  azi: 175.00, tvd: 2000.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
+    { sectionType: 'OPT AL DLS',    md: 3050.0,  inc: 55.00, azi: 175.00, tvd: 2826.0, northing: 12145602.00, easting: 2564594.00, target: '' },
+    { sectionType: 'Hold',          md: 3350.0,  inc: 55.00, azi: 175.00, tvd: 2998.0, northing: 12145357.00, easting: 2564615.00, target: '' },
+    { sectionType: 'Build + Turn',  md: 3650.0,  inc: 82.00, azi: 230.00, tvd: 3105.0, northing: 12145139.00, easting: 2564512.00, target: 'LP2' },
+    { sectionType: 'Lateral',       md: 10650.0, inc: 82.00, azi: 230.00, tvd: 4080.0, northing: 12140685.00, easting: 2559202.00, target: 'BHL2' },
+];
+
+const WELL_TARGETS = [
+    { name: 'LP1',  wellbore: 'Lateral 1', tpIndexParam: 'lat1LP1Position' },
+    { name: 'BHL',  wellbore: 'Lateral 1', tpIndex: 5 },
+    { name: 'LP2',  wellbore: 'Lateral 2', tpIndex: 4 },
+];
+
+const WELL_DEFS = [
+    { name: 'Lateral 1', turnPoints: LATERAL1_TURN_POINTS, colorParam: 'lat1Color', visParam: 'showLateral1' },
+    { name: 'Lateral 2', turnPoints: LATERAL2_TURN_POINTS, colorParam: 'lat2Color', visParam: 'showLateral2' },
+];
+
+// ── Minimum Curvature Interpolation ────────────────────────────
+const DEG2RAD = Math.PI / 180;
+const WELL_INTERP_STEPS = 20;
+
+function lerpAngle(a1, a2, t) {
+    let diff = a2 - a1;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    let result = a1 + diff * t;
+    if (result < 0) result += 360;
+    if (result >= 360) result -= 360;
+    return result;
+}
+
+function minimumCurvature(turnPoints) {
+    const stations = [];
+    stations.push({ ...turnPoints[0] });
+
+    for (let i = 0; i < turnPoints.length - 1; i++) {
+        const p1 = turnPoints[i];
+        const p2 = turnPoints[i + 1];
+        for (let j = 1; j <= WELL_INTERP_STEPS; j++) {
+            const frac = j / WELL_INTERP_STEPS;
+            const md = p1.md + (p2.md - p1.md) * frac;
+            const inc = p1.inc + (p2.inc - p1.inc) * frac;
+            const azi = lerpAngle(p1.azi, p2.azi, frac);
+
+            const prev = stations[stations.length - 1];
+            const deltaMD = md - prev.md;
+
+            const i1 = prev.inc * DEG2RAD, a1 = prev.azi * DEG2RAD;
+            const i2 = inc * DEG2RAD,      a2 = azi * DEG2RAD;
+
+            const cosDL = Math.cos(i2 - i1) - Math.sin(i1) * Math.sin(i2) * (1 - Math.cos(a2 - a1));
+            const dl = Math.acos(Math.min(1, Math.max(-1, cosDL)));
+            const rf = dl < 1e-7 ? 1.0 : (2 / dl) * Math.tan(dl / 2);
+
+            const dN   = (deltaMD / 2) * (Math.sin(i1) * Math.cos(a1) + Math.sin(i2) * Math.cos(a2)) * rf;
+            const dE   = (deltaMD / 2) * (Math.sin(i1) * Math.sin(a1) + Math.sin(i2) * Math.sin(a2)) * rf;
+            const dTVD = (deltaMD / 2) * (Math.cos(i1) + Math.cos(i2)) * rf;
+
+            stations.push({
+                md, inc, azi,
+                tvd:      prev.tvd + dTVD,
+                northing: prev.northing + dN,
+                easting:  prev.easting + dE,
+                sectionType: j === WELL_INTERP_STEPS ? p2.sectionType : p1.sectionType,
+                target:      j === WELL_INTERP_STEPS ? p2.target : '',
+            });
+        }
+    }
+    return stations;
+}
+
+// Convert well coordinates (ft, absolute) → scene metres (relative to well surface)
+function wellToWorld(northing, easting, tvd) {
+    return new THREE.Vector3(
+        (easting - WELL_SURFACE_EASTING) * FT_TO_M,   // +X = East
+        -tvd * FT_TO_M,                                 // -Y = depth
+        -(northing - WELL_SURFACE_NORTHING) * FT_TO_M, // -Z = North
+    );
+}
+
+// Pre-compute stations
+const wellStations = new Map();
+for (const wb of WELL_DEFS) {
+    wellStations.set(wb.name, minimumCurvature(wb.turnPoints));
+}
+
+// ── Build Well Trajectories ────────────────────────────────────
+function buildWellTrajectories() {
+    // Clear existing
+    while (wellGroup.children.length > 0) {
+        const c = wellGroup.children[0];
+        wellGroup.remove(c);
+        c.geometry?.dispose();
+        if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+        else c.material?.dispose();
+    }
+
+    for (const wb of WELL_DEFS) {
+        if (!params[wb.visParam]) continue;
+        const stations = wellStations.get(wb.name);
+        if (!stations || stations.length < 2) continue;
+
+        const baseColor = new THREE.Color(params[wb.colorParam]);
+
+        // Tube segments per turn-point-delimited section
+        for (let tpIdx = 0; tpIdx < wb.turnPoints.length - 1; tpIdx++) {
+            const startSt = tpIdx * WELL_INTERP_STEPS;
+            const endSt   = Math.min((tpIdx + 1) * WELL_INTERP_STEPS, stations.length - 1);
+
+            const pts = [];
+            for (let i = startSt; i <= endSt; i++) {
+                const s = stations[i];
+                pts.push(wellToWorld(s.northing, s.easting, s.tvd));
+            }
+            if (pts.length < 2) continue;
+
+            // Rotate Lateral 2 around its KOP junction
+            if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+                const pivot = pts[0].clone(); // KOP is the first point (for first segment) or rotate all
+                const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
+                const angle = -params.lat2RotationDeg * Math.PI / 180;
+                const cosA = Math.cos(angle), sinA = Math.sin(angle);
+                for (const p of pts) {
+                    const dx = p.x - kopWorld.x, dz = p.z - kopWorld.z;
+                    p.x = kopWorld.x + dx * cosA - dz * sinA;
+                    p.z = kopWorld.z + dx * sinA + dz * cosA;
+                }
+            }
+
+            const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+            const tubeGeo = new THREE.TubeGeometry(curve, Math.max(pts.length * 3, 16), params.wellTubeRadius, 8, false);
+            const tubeMat = new THREE.MeshPhongMaterial({
+                color: baseColor,
+                emissive: baseColor.clone().multiplyScalar(0.15),
+                shininess: 60,
+            });
+            const tube = new THREE.Mesh(tubeGeo, tubeMat);
+            tube.userData = { isWell: true, wellbore: wb.name };
+            wellGroup.add(tube);
+        }
+
+        // Wellhead sphere
+        const s0 = stations[0];
+        if (s0.tvd === 0) {
+            const headPos = wellToWorld(s0.northing, s0.easting, s0.tvd);
+            const headGeo = new THREE.SphereGeometry(params.wellTubeRadius * 3, 16, 16);
+            const headMat = new THREE.MeshPhongMaterial({
+                color: baseColor,
+                emissive: baseColor.clone().multiplyScalar(0.3),
+            });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.copy(headPos);
+            head.scale.y = 1 / (params.zScale || 1); // counter depth exaggeration
+            head.userData = { isWell: true, wellbore: wb.name };
+            wellGroup.add(head);
+        }
+
+        // Turn point markers (small orbs at each turn point)
+        for (let tpIdx = 0; tpIdx < wb.turnPoints.length; tpIdx++) {
+            const stationIdx = Math.min(tpIdx * WELL_INTERP_STEPS, stations.length - 1);
+            const s = stations[stationIdx];
+            const tpPos = wellToWorld(s.northing, s.easting, s.tvd);
+
+            // Rotate Lateral 2 turn point markers around KOP
+            if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+                const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
+                const angle = -params.lat2RotationDeg * Math.PI / 180;
+                const cosA = Math.cos(angle), sinA = Math.sin(angle);
+                const dx = tpPos.x - kopWorld.x, dz = tpPos.z - kopWorld.z;
+                tpPos.x = kopWorld.x + dx * cosA - dz * sinA;
+                tpPos.z = kopWorld.z + dx * sinA + dz * cosA;
+            }
+
+            const markerGeo = new THREE.SphereGeometry(params.wellTubeRadius * 2, 12, 12);
+            const markerMat = new THREE.MeshPhongMaterial({
+                color: baseColor,
+                emissive: baseColor.clone().multiplyScalar(0.25),
+            });
+            const marker = new THREE.Mesh(markerGeo, markerMat);
+            marker.position.copy(tpPos);
+            marker.scale.y = 1 / (params.zScale || 1);
+            marker.userData = { isWell: true, wellbore: wb.name, isTurnPoint: true, tpIdx };
+            wellGroup.add(marker);
+        }
+
+        // TD sphere
+        const td = stations[stations.length - 1];
+        const tdPos = wellToWorld(td.northing, td.easting, td.tvd);
+        // Rotate Lateral 2 TD around KOP
+        if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+            const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
+            const angle = -params.lat2RotationDeg * Math.PI / 180;
+            const cosA = Math.cos(angle), sinA = Math.sin(angle);
+            const dx = tdPos.x - kopWorld.x, dz = tdPos.z - kopWorld.z;
+            tdPos.x = kopWorld.x + dx * cosA - dz * sinA;
+            tdPos.z = kopWorld.z + dx * sinA + dz * cosA;
+        }
+        const tdGeo = new THREE.SphereGeometry(params.wellTubeRadius * 2.5, 12, 12);
+        const tdMat = new THREE.MeshPhongMaterial({
+            color: baseColor,
+            emissive: baseColor.clone().multiplyScalar(0.2),
+        });
+        const tdMesh = new THREE.Mesh(tdGeo, tdMat);
+        tdMesh.position.copy(tdPos);
+        tdMesh.scale.y = 1 / (params.zScale || 1);
+        tdMesh.userData = { isWell: true, wellbore: wb.name };
+        wellGroup.add(tdMesh);
+    }
+
+    // Target orbs
+    if (params.wellShowTargets) {
+        const tColor = new THREE.Color(params.wellTargetColor);
+        for (const tgt of WELL_TARGETS) {
+            const wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
+            if (!wb || !params[wb.visParam]) continue;
+
+            const stns = wellStations.get(wb.name);
+            const tpIdx = tgt.tpIndexParam ? params[tgt.tpIndexParam] : tgt.tpIndex;
+            const stIdx = Math.min(Math.round(tpIdx * WELL_INTERP_STEPS), stns.length - 1);
+            const s = stns[stIdx];
+            const pos = wellToWorld(s.northing, s.easting, s.tvd);
+
+            // Rotate Lateral 2 targets around KOP
+            if (tgt.wellbore === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+                const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
+                const angle = -params.lat2RotationDeg * Math.PI / 180;
+                const cosA = Math.cos(angle), sinA = Math.sin(angle);
+                const dx = pos.x - kopWorld.x, dz = pos.z - kopWorld.z;
+                pos.x = kopWorld.x + dx * cosA - dz * sinA;
+                pos.z = kopWorld.z + dx * sinA + dz * cosA;
+            }
+
+            const orbGeo = new THREE.SphereGeometry(params.wellTargetSize, 32, 32);
+            const orbMat = new THREE.MeshPhongMaterial({
+                color: tColor,
+                emissive: tColor.clone().multiplyScalar(0.15),
+                transparent: true,
+                opacity: params.wellTargetOpacity,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+                shininess: 80,
+            });
+            const orb = new THREE.Mesh(orbGeo, orbMat);
+            orb.position.copy(pos);
+            orb.scale.y = 1 / (params.zScale || 1);
+            orb.name = `target-${tgt.name}`;
+            orb.userData = { isWell: true, isTarget: true };
+            wellGroup.add(orb);
+        }
+    }
 }
 
 // Add Custom UI Styles and HTML
@@ -710,15 +952,8 @@ uiContainer.innerHTML = `
     </div>
 `;
 document.body.appendChild(uiContainer);
-// Move preset bar inline with the field picker
-const _presetBar = uiContainer.querySelector('.preset-bar');
-if (_presetBar) {
-    const _datasetSel = document.getElementById('dataset-selector');
-    if (_datasetSel) {
-        _datasetSel.style.cssText += ';display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px;';
-        _datasetSel.appendChild(_presetBar);
-    }
-}
+
+
 
 window.closeModal = (id) => {
     document.getElementById(id).style.display = 'none';
@@ -779,13 +1014,7 @@ const _paramsDefaults = {
     headlampIntensity: 0.39,
     hemiIntensity: 1.62,
     lightingEnabled: true,
-    horizonTextureAmp: 0,      // 0 = smooth, 10 = full geological texture
-    subregionEnabled: false,   // show HD survey subregion box
-    subregionX: 0,             // scene X centre of box (metres from field centre)
-    subregionZ: 0,             // scene Z centre of box
-    subregionW: 1000,          // box E-W width (m)
-    subregionD: 2500,          // box N-S depth (m)
-    useVolveTexture: true,     // use real Volve BCU residual instead of synthetic fBm
+
     faultColorMode: 'original',// 'original' | 'uniform' | 'warm' | 'cool' | 'earth' | 'mono'
     faultSingleColor: '#aaaaaa',
     regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
@@ -800,14 +1029,44 @@ const _paramsDefaults = {
     regionalContourOpacity: 0.4,
     regionalContourColor: '#7799BB',  // matches regional mesh body color
     regionalContourSmooth: 0,         // Laplacian smoothing iterations (0 = off)
-    // ── Horizon footprint bounding box ───────────────────────────────────────
-    horizonBBoxVisible: false,         // show auto-fitted horizon footprint box
+    // ── Horizon footprint bounding boxes ─────────────────────────────────────
+    norneBBoxVisible: false,            // show Norne horizon footprint box
+    volveBBoxVisible: false,            // show Volve horizon footprint box
     horizonBBoxColor: '#ffffff',       // wireframe colour
     // ── Per-horizon depth exaggeration ───────────────────────────────────────
     horizonDepthExag: 1.0,             // 1 = true scale; >1 spreads layers apart
     // Seismic crossline panel
     seismicPanelVisible: true,         // toggle the crossline plane
     seismicPanelOpacity: 0.9,          // 0 = transparent, 1 = fully opaque
+    // ── Survey position offset ───────────────────────────────────────────────
+    surveyOffsetEastKm: 0,             // Norne: km east (positive) or west (negative)
+    surveyOffsetNorthKm: 0,            // Norne: km north (positive) or south (negative)
+    surveyRotationDeg: 0,              // Norne: degrees clockwise rotation
+    norneDepthOffsetM: 0,              // Norne: vertical depth offset in metres (+ = deeper)
+    volveOffsetEastKm: 0,              // Volve: km east (positive) or west (negative)
+    volveOffsetNorthKm: 0,             // Volve: km north (positive) or south (negative)
+    volveRotationDeg: 0,               // Volve: degrees clockwise rotation
+    volveDepthOffsetM: 0,              // Volve: vertical depth offset in metres (+ = deeper)
+    norneScale: 1.0,                   // Norne: uniform XZ scale factor
+    volveScale: 1.0,                   // Volve: uniform XZ scale factor
+    regionalFitToVolve: false,         // fit to Hugin Fm Base (Volve)
+    // ── Well Trajectories ────────────────────────────────────────────────────
+    showLateral1: true,
+    showLateral2: true,
+    lat1Color: '#7495d8',
+    lat2Color: '#d87474',
+    wellTubeRadius: 8,                 // metres (scene units)
+    wellShowTargets: true,
+    wellTargetColor: '#3ad994',
+    wellTargetSize: 50,                // metres (scene units)
+    wellTargetOpacity: 0.25,
+    wellOffsetEastKm: 0,
+    wellOffsetNorthKm: 0,
+    wellRotationDeg: 0,
+    wellScale: 1.0,
+    wellDepthOffsetM: 0,
+    lat2RotationDeg: 0,                // Lateral 2 rotation around its KOP (°)
+    lat1LP1Position: 4.5,              // LP1 target position along Lateral 1 (turn point index)
 };
 
 // Merge any previously saved values over the defaults
@@ -843,179 +1102,110 @@ let faultFolder = gui.addFolder('Faults');
 _trackFolder(faultFolder, 'Faults');
 faultFolder.close();
 
-// ── Horizon texture (fBm noise displacement) ─────────────────────────────────
-// Simple 3-octave value noise applied as a Y-axis (depth) displacement.
-// Noise is deterministic (seed via sine hash) so it's consistent on reload.
-function _hash2(x, y) {
-    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return s - Math.floor(s);
-}
-function _smoothNoise2(x, y) {
-    const ix = Math.floor(x), iy = Math.floor(y);
-    const fx = x - ix, fy = y - iy;
-    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-    const a = _hash2(ix,   iy),   b = _hash2(ix+1, iy);
-    const c = _hash2(ix,   iy+1), d = _hash2(ix+1, iy+1);
-    return a + (b-a)*ux + (c-a)*uy + (b-a+d-c-b+a)*ux*uy - 0.5; // centre on 0
-}
-function _fbm2(wx, wy) {
-    // Three octaves: large compaction drape, medium bedform, fine fabric
-    //   octave 1: 800m wavelength, amplitude scale=1.0
-    //   octave 2: 200m wavelength, amplitude scale=0.4
-    //   octave 3: 50m  wavelength, amplitude scale=0.15
-    const OCTAVES = [[1/800, 1.0], [1/200, 0.4], [1/50, 0.15]];
-    let v = 0;
-    for (const [freq, amp] of OCTAVES) v += _smoothNoise2(wx*freq, wy*freq) * amp;
-    return v; // range roughly ±0.77
-}
 
-// HD survey subregion: white wireframe box + fBm noise only inside footprint.
-// ── Volve BCU real-data texture ──────────────────────────────────────────────
-// Loaded once at startup; null while loading or if file absent.
-let volveTexture = null;
-(async () => {
-    try {
-        const r = await fetch('volve_bcu_texture.json');
-        if (r.ok) {
-            volveTexture = await r.json();
-            console.log('Volve texture loaded:', volveTexture.rows, '×', volveTexture.cols);
-            // Re-apply texture now that real data is available
-            if (params.useVolveTexture && params.subregionEnabled && params.horizonTextureAmp > 0) {
-                applyHorizonTexture(params.horizonTextureAmp);
-                updateColoring();
-            }
-        }
-    } catch(e) { console.warn('Volve texture unavailable, using fBm fallback'); }
-})();
-
-// Bilinear sample from the Volve texture, tiling in both axes.
-function _sampleVolveTexture(u, v) {
-    if (!volveTexture) return 0;
-    const rows = volveTexture.rows, cols = volveTexture.cols, data = volveTexture.data;
-    u = ((u % 1) + 1) % 1;
-    v = ((v % 1) + 1) % 1;
-    const x = u * (cols - 1), y = v * (rows - 1);
-    const ix = Math.floor(x), iy = Math.floor(y);
-    const fx = x - ix, fy = y - iy;
-    const r0 = data[iy], r1 = data[Math.min(iy+1, rows-1)];
-    const c1 = Math.min(ix+1, cols-1);
-    return r0[ix]*(1-fx)*(1-fy) + r0[c1]*fx*(1-fy) + r1[ix]*(1-fx)*fy + r1[c1]*fx*fy;
-}
-
-let subregionBox = null; // THREE.LineSegments for the white bounding box
-let horizonBBox   = null;  // THREE.LineSegments auto-fitted to horizon footprint
+let horizonBBox   = null;  // Norne: THREE.LineSegments auto-fitted to horizon footprint
+let volveBBox     = null;  // Volve: THREE.LineSegments
 let seismicPanel  = null;  // THREE.Mesh textured seismic crossline plane
 let _obbState     = null;  // cached OBB geometry params shared by bbox + seismic panel
 
-// Build (or rebuild) an Oriented Bounding Box fitted to the horizon survey footprint.
-// Uses PCA on the XZ vertex cloud to find the dominant survey strike direction,
-// then rotates a box to match it snugly.
-// Height: top = shallowest horizon vertex (≈ seabed / start of survey),
-//         bottom = deepest horizon vertex + small extra punch (~8% of stack height).
-// Rendered as a dashed wireframe. Lives in modelGroup so it scales with zScale.
-function buildHorizonBBox() {
-    if (horizonBBox) {
-        modelGroup.remove(horizonBBox);
-        horizonBBox.geometry.dispose();
-        horizonBBox.material.dispose();
-        horizonBBox = null;
-    }
-
-    // ── Step 1: Collect XZ footprint positions (sample every 4th vertex for speed) ──
-    const xzPts = []; // { x, z }
+// Generic: build an OBB fitted to a single survey group's horizons
+function buildSurveyBBox(surveyGroup) {
+    const xzPts = [];
     let minY = Infinity, maxY = -Infinity;
-    modelGroup.children.forEach(m => {
+    surveyGroup.children.forEach(m => {
         if (!m.userData.isHorizon || m.userData.isContour) return;
         if (!(m instanceof THREE.Mesh)) return;
         const pos = m.geometry.attributes.position;
         for (let i = 0; i < pos.count; i += 4) {
             const y = pos.getY(i);
-            if (y === 0) continue; // skip invalid (hole-fill) vertices
+            if (y === 0) continue;
             xzPts.push({ x: pos.getX(i), z: pos.getZ(i) });
             if (y < minY) minY = y;
             if (y > maxY) maxY = y;
         }
     });
-    if (xzPts.length < 3 || !isFinite(minY) || !isFinite(maxY)) return;
+    if (xzPts.length < 3 || !isFinite(minY) || !isFinite(maxY)) return null;
 
-    // ── Step 2: PCA on XZ to find the survey's dominant strike axis ──────────────
     const cx = xzPts.reduce((s, p) => s + p.x, 0) / xzPts.length;
     const cz = xzPts.reduce((s, p) => s + p.z, 0) / xzPts.length;
-
     let Cxx = 0, Cxz = 0, Czz = 0;
     for (const p of xzPts) {
         const dx = p.x - cx, dz = p.z - cz;
         Cxx += dx * dx; Cxz += dx * dz; Czz += dz * dz;
     }
     Cxx /= xzPts.length; Cxz /= xzPts.length; Czz /= xzPts.length;
-
-    // Eigenvector of 2×2 symmetric covariance → principal axis (ax, az)
-    const trace = Cxx + Czz;
-    const det   = Cxx * Czz - Cxz * Cxz;
-    const disc  = Math.sqrt(Math.max(0, (trace * 0.5) ** 2 - det));
-    const lam1  = trace * 0.5 + disc;
+    const trace = Cxx + Czz, det = Cxx * Czz - Cxz * Cxz;
+    const disc = Math.sqrt(Math.max(0, (trace * 0.5) ** 2 - det));
+    const lam1 = trace * 0.5 + disc;
     let ax, az;
-    if (Math.abs(Cxz) > 1e-10) {
-        ax = lam1 - Czz; az = Cxz;
-    } else {
-        ax = Cxx >= Czz ? 1 : 0; az = Cxx >= Czz ? 0 : 1;
-    }
+    if (Math.abs(Cxz) > 1e-10) { ax = lam1 - Czz; az = Cxz; }
+    else { ax = Cxx >= Czz ? 1 : 0; az = Cxx >= Czz ? 0 : 1; }
     const len = Math.sqrt(ax * ax + az * az);
     ax /= len; az /= len;
-    const bx = -az, bz = ax; // perpendicular axis
+    const bx = -az, bz = ax;
 
-    // ── Step 3: Project all points onto OBB axes to find extents ─────────────────
     let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
     for (const p of xzPts) {
         const dx = p.x - cx, dz = p.z - cz;
-        const pA = dx * ax + dz * az;
-        const pB = dx * bx + dz * bz;
+        const pA = dx * ax + dz * az, pB = dx * bx + dz * bz;
         if (pA < minA) minA = pA; if (pA > maxA) maxA = pA;
         if (pB < minB) minB = pB; if (pB > maxB) maxB = pB;
     }
 
-    // ── Step 4: Compute OBB geometry ─────────────────────────────────────────────
-    const widthA = maxA - minA;  // dimension along principal axis
-    const widthB = maxB - minB;  // dimension along perpendicular axis
-
-    // Centre of OBB footprint in world XZ
+    const widthA = maxA - minA, widthB = maxB - minB;
     const oCtrA = (minA + maxA) * 0.5, oCtrB = (minB + maxB) * 0.5;
     const oCtrX = cx + oCtrA * ax + oCtrB * bx;
     const oCtrZ = cz + oCtrA * az + oCtrB * bz;
+    const stackH = maxY - minY;
+    const bottom = minY - stackH * 0.08;
+    const boxHeight = maxY - bottom;
+    const oCtrY = (maxY + bottom) * 0.5;
 
-    // Y extent: top = shallowest horizon vertex (≈ seabed / start of survey column),
-    //           bottom = deepest vertex + small extra push (8% of stack thickness)
-    //           so the box encloses the full survey column with a hint of depth.
-    const stackH     = maxY - minY;           // total survey stack height
-    const bottom     = minY - stackH * 0.08;  // punch ~8% deeper than deepest horizon
-    const boxHeight  = maxY - bottom;         // positive height
-    const oCtrY      = (maxY + bottom) * 0.5; // centre between seabed top and deep bottom
-
-    // ── Step 5: Build geometry, rotate, and place ─────────────────────────────────
     const bGeo = new THREE.BoxGeometry(widthA, boxHeight, widthB);
     const edges = new THREE.EdgesGeometry(bGeo);
     bGeo.dispose();
-
     const dashMat = new THREE.LineDashedMaterial({
-        color:    new THREE.Color(params.horizonBBoxColor),
-        dashSize: Math.max(25, stackH * 0.025), // shorter dashes
-        gapSize:  Math.max(50, stackH * 0.06),  // wider gaps for a more spaced-out look
+        color: new THREE.Color(params.horizonBBoxColor),
+        dashSize: Math.max(25, stackH * 0.025),
+        gapSize: Math.max(50, stackH * 0.06),
     });
-    horizonBBox = new THREE.LineSegments(edges, dashMat);
-    horizonBBox.computeLineDistances(); // required for dashed rendering
-    horizonBBox.position.set(oCtrX, oCtrY, oCtrZ);
+    const bbox = new THREE.LineSegments(edges, dashMat);
+    bbox.computeLineDistances();
+    bbox.position.set(oCtrX, oCtrY, oCtrZ);
+    bbox.rotation.y = Math.atan2(-az, ax);
+    bbox.userData.isHorizonBBox = true;
+    surveyGroup.add(bbox);
+    return { bbox, oCtrX, oCtrY, oCtrZ, rotY: Math.atan2(-az, ax), widthA, widthB, boxHeight };
+}
 
-    // Rotate around Y so local +X aligns with principal strike axis (ax, 0, az).
-    // Three.js rotateY(θ): local X → (cos θ, 0, −sin θ)  =>  θ = atan2(−az, ax)
-    horizonBBox.rotation.y = Math.atan2(-az, ax);
+function buildHorizonBBox() {
+    // Norne bbox
+    if (horizonBBox) {
+        norneSurveyGroup.remove(horizonBBox);
+        horizonBBox.geometry.dispose();
+        horizonBBox.material.dispose();
+        horizonBBox = null;
+    }
+    const norneResult = buildSurveyBBox(norneSurveyGroup);
+    if (norneResult) {
+        horizonBBox = norneResult.bbox;
+        horizonBBox.visible = params.norneBBoxVisible;
+        _obbState = norneResult;
+        buildSeismicPanel();
+    }
 
-    horizonBBox.visible = params.horizonBBoxVisible;
-    horizonBBox.userData.isHorizonBBox = true;
-    modelGroup.add(horizonBBox);
-
-    // Cache OBB parameters for the seismic panel, then rebuild the panel
-    _obbState = { oCtrX, oCtrY, oCtrZ, rotY: Math.atan2(-az, ax), widthA, widthB, boxHeight };
-    buildSeismicPanel();
+    // Volve bbox
+    if (volveBBox) {
+        volveSurveyGroup.remove(volveBBox);
+        volveBBox.geometry.dispose();
+        volveBBox.material.dispose();
+        volveBBox = null;
+    }
+    const volveResult = buildSurveyBBox(volveSurveyGroup);
+    if (volveResult) {
+        volveBBox = volveResult.bbox;
+        volveBBox.visible = params.volveBBoxVisible;
+    }
 }
 
 // ── Seismic crossline panel ───────────────────────────────────────────────────
@@ -1024,7 +1214,7 @@ function buildHorizonBBox() {
 const _seismicTexture = new THREE.TextureLoader().load('seismic_crossline.jpg');
 function buildSeismicPanel() {
     if (seismicPanel) {
-        modelGroup.remove(seismicPanel);
+        norneSurveyGroup.remove(seismicPanel);
         seismicPanel.geometry.dispose();
         seismicPanel.material.dispose();
         seismicPanel = null;
@@ -1046,19 +1236,19 @@ function buildSeismicPanel() {
     seismicPanel.rotation.y = rotY + Math.PI / 2; // perpendicular to long axis = crossline
     seismicPanel.visible = params.seismicPanelVisible;
     seismicPanel.userData.isSeismicPanel = true;
-    modelGroup.add(seismicPanel);
+    norneSurveyGroup.add(seismicPanel);
 }
 
 
 // ── Per-horizon depth exaggeration ──────────────────────────────────────────
 // Spreads horizon layers apart on the Y axis, anchored to the deepest layer
 // so the regional context surface (which sits below all horizons) is unaffected.
-// Stores a per-mesh Y shift in mesh.userData.exagShift; applyHorizonTexture
+// Stores a per-mesh Y shift in mesh.userData.exagShift; applyHorizonPositions
 // uses that shift as the base offset before adding any noise.
 function applyHorizonDepthExag(exag) {
     // Step 1: compute mean raw Y for every horizon mesh
     const meshInfos = [];
-    modelGroup.children.forEach(mesh => {
+    allSurveyChildren().forEach(mesh => {
         if (!mesh.userData.isHorizon || !mesh.userData.rawHorizonPos || mesh.userData.isContour) return;
         if (!(mesh instanceof THREE.Mesh)) return;
         const raw = mesh.userData.rawHorizonPos;
@@ -1071,14 +1261,14 @@ function applyHorizonDepthExag(exag) {
     // Step 2: anchor on the deepest (most-negative Y) horizon
     const bottomMeanY = Math.min(...meshInfos.map(m => m.meanY));
 
-    // Step 3: store the exaggeration shift on each mesh for applyHorizonTexture to use
+    // Step 3: store the exaggeration shift on each mesh
     meshInfos.forEach(({ mesh, meanY }) => {
         // shift = extra Y offset added on top of raw positions (0 at bottom layer)
         mesh.userData.exagShift = (meanY - bottomMeanY) * (exag - 1.0);
     });
 
-    // Step 4: re-apply texture (which reads exagShift) and recolor
-    applyHorizonTexture(params.horizonTextureAmp);
+    // Step 4: re-apply raw positions with exag shift and recolor
+    applyHorizonPositions();
     updateColoring();
 
     // Step 5: rebuild bbox so it reflects new extents
@@ -1093,10 +1283,12 @@ function addHorizonPanelControls() {
     depthExagFolder.add(params, 'horizonDepthExag', 1.0, 5.0, 0.05)
         .name('Layer Spread (×)')
         .onChange(v => applyHorizonDepthExag(v));
-    depthExagFolder.add(params, 'horizonBBoxVisible').name('Footprint Box')
+    depthExagFolder.add(params, 'norneBBoxVisible').name('Norne Footprint Box')
         .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
+    depthExagFolder.add(params, 'volveBBoxVisible').name('Volve Footprint Box')
+        .onChange(v => { if (volveBBox) volveBBox.visible = v; });
     depthExagFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
-        .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); });
+        .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); if (volveBBox) volveBBox.material.color.set(v); });
     // Seismic crossline panel controls
     depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
         .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
@@ -1105,95 +1297,22 @@ function addHorizonPanelControls() {
 }
 
 
-function rebuildSubregionBox() {
-    if (subregionBox) { scene.remove(subregionBox); subregionBox.geometry.dispose(); subregionBox = null; }
-    if (!params.subregionEnabled) return;
-
-    // Compute Y extent from all horizon raw positions
-    let minY = Infinity, maxY = -Infinity;
-    modelGroup.children.forEach(m => {
-        if (!m.userData.isHorizon || !m.userData.rawHorizonPos) return;
-        const raw = m.userData.rawHorizonPos;
-        for (let i = 1; i < raw.length; i += 3) { if (raw[i] < minY) minY = raw[i]; if (raw[i] > maxY) maxY = raw[i]; }
-    });
-    const boxH = (maxY - minY) || 400;
-    const midY = (minY + maxY) / 2;
-
-    const W = params.subregionW, D = params.subregionD;
-    const bGeo = new THREE.BoxGeometry(W, boxH, D);
-    const edges = new THREE.EdgesGeometry(bGeo);
-    subregionBox = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
-    subregionBox.position.set(
-        params.subregionX,
-        midY * params.zScale,     // match zScale of modelGroup
-        params.subregionZ
-    );
-    scene.add(subregionBox);
-}
-
-// Apply fBm displacement inside the subregion footprint; reset outside.
-function applyHorizonTexture(amp) {
-    const enabled  = params.subregionEnabled;
-    const sX = params.subregionX, sZ = params.subregionZ;
-    const halfW = params.subregionW / 2, halfD = params.subregionD / 2;
-    // Noise amplitude: 20m at amp=10 (visible when zoomed into 1km box)
-    const maxAmp = (amp / 10) * 20.0;
-
-    modelGroup.children.forEach(mesh => {
+// Reset horizon mesh vertex positions to raw + depth exaggeration shift.
+function applyHorizonPositions() {
+    allSurveyChildren().forEach(mesh => {
         if (!mesh.userData.isHorizon || !mesh.userData.rawHorizonPos) return;
         if (!(mesh instanceof THREE.Mesh)) return;
         const pos = mesh.geometry.attributes.position;
         const raw = mesh.userData.rawHorizonPos;
-        const cX = mesh.userData.centerX || 0, cY = mesh.userData.centerY || 0;
-
-        // Per-mesh depth exaggeration shift (0 when exag=1 or not yet computed)
         const exagShift = mesh.userData.exagShift || 0;
 
         for (let i = 0; i < pos.count; i++) {
             const rx = raw[i * 3], ry = raw[i * 3 + 1], rz = raw[i * 3 + 2];
-            // Reset to raw + depth-exaggeration offset
             pos.setXYZ(i, rx, ry + exagShift, rz);
-            if (amp === 0 || !enabled) continue;
-
-            // Is this vertex inside the subregion footprint (XZ plane)?
-            const px = rx, pz = rz; // scene coords (already centred)
-            if (Math.abs(px - sX) > halfW || Math.abs(pz - sZ) > halfD) continue;
-
-            let noise;
-            if (params.useVolveTexture && volveTexture) {
-                // Physical-scale sampling: 1m in box == 1m in texture.
-                // Texture covers: rows×dx_il metres (IL / E-W) × cols×dx_xl metres (XL / N-S)
-                const texW = volveTexture.rows * volveTexture.dx_il;  // ≈ 1000 m
-                const texD = volveTexture.cols * volveTexture.dx_xl;  // ≈ 2500 m
-                // Offset from box centre → normalised texture coordinate (tiles if box > texture)
-                const u = (px - sX) / texW + 0.5;
-                const v = (pz - sZ) / texD + 0.5;
-                // Sample: u addresses rows (IL/1000m), v addresses cols (XL/2500m)
-                const rawVal = _sampleVolveTexture(v, u); // note: sampler is (u→cols, v→rows), swap
-                const range = (volveTexture.p95 - volveTexture.p5) / 2 || 1;
-                noise = rawVal / range;
-
-            } else {
-                // Fall back to synthetic fBm
-                const wx = rx + cX, wz = -(rz) + cY;
-                noise = _fbm2(wx * 0.001, wz * 0.001);
-            }
-            // Apply noise on top of the depth-exaggeration-shifted base
-            pos.setY(i, ry + exagShift + noise * maxAmp);
         }
         pos.needsUpdate = true;
         mesh.geometry.computeVertexNormals();
     });
-    // Keep box position in sync with zScale
-    if (subregionBox) {
-        let minY = Infinity, maxY = -Infinity;
-        modelGroup.children.forEach(m => {
-            if (!m.userData.isHorizon || !m.userData.rawHorizonPos) return;
-            const raw = m.userData.rawHorizonPos;
-            for (let i = 1; i < raw.length; i += 3) { if (raw[i] < minY) minY = raw[i]; if (raw[i] > maxY) maxY = raw[i]; }
-        });
-        subregionBox.position.y = ((minY + maxY) / 2) * params.zScale;
-    }
 }
 
 
@@ -1229,7 +1348,7 @@ function simplifyStick(pts, eps) {
 // vertex buffer.  Canonical sticks are stored on mesh.userData at build time.
 function applyFaultSmoothing(iterations) {
     const LAMBDA = 0.5;
-    modelGroup.children.forEach(mesh => {
+    allSurveyChildren().forEach(mesh => {
         if (!mesh.userData.isFault || !mesh.userData.canonicalSticks) return;
         if (!(mesh instanceof THREE.Mesh)) return;
 
@@ -1290,7 +1409,7 @@ function initLayerControls(layers) {
 
         // Initialise scene from stored state
         const _ls = layerState[h.name];
-        modelGroup.children.forEach(c => {
+        allSurveyChildren().forEach(c => {
             if (c.userData.layerName === h.name) {
                 if (c.userData.isContour) {
                     c.userData.layerVisible = _ls.visible;
@@ -1304,7 +1423,7 @@ function initLayerControls(layers) {
         });
 
         folder.add(layerState[h.name], 'visible').onChange(v => {
-            modelGroup.children.forEach(c => {
+            allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name) {
                     if (c.userData.isContour) { c.userData.layerVisible = v; c.visible = v && params.showContours; }
                     else { c.visible = v; }
@@ -1314,9 +1433,11 @@ function initLayerControls(layers) {
         });
 
         folder.add(layerState[h.name], 'opacity', 0, 1).onChange(v => {
-            modelGroup.children.forEach(c => {
+            allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name) {
-                    c.material.transparent = true; c.material.opacity = v; c.material.needsUpdate = true;
+                    c.material.transparent = true; c.material.opacity = v;
+                    c.material.depthWrite = v >= 1;
+                    c.material.needsUpdate = true;
                 }
             });
             try { localStorage.setItem('geo_layer_' + h.name, JSON.stringify(layerState[h.name])); } catch(e) {}
@@ -1329,7 +1450,7 @@ function initLayerControls(layers) {
         masterFaultCtrl = faultFolder.add(faultToggleState, 'visible').name('Show All Faults').onChange(v => {
             faultLayers.forEach(f => {
                 layerState[f.name].visible = v;
-                modelGroup.children.forEach(c => {
+                allSurveyChildren().forEach(c => {
                     if (c.userData.layerName === f.name) c.visible = v;
                 });
                 // PERSIST: master toggle must save each fault individually so they
@@ -1368,15 +1489,15 @@ function initLayerControls(layers) {
             const _storedFault = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + f.name) || 'null'); } catch(e){ return null; } })();
             layerState[f.name] = { visible: _storedFault?.visible ?? true, opacity: _storedFault?.opacity ?? 0.75 };
 
-            modelGroup.children.forEach(c => {
+            allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === f.name) {
                     c.visible = layerState[f.name].visible;
-                    if (c.material) { c.material.transparent = true; c.material.opacity = 0.75; }
+                    if (c.material) { c.material.transparent = true; c.material.opacity = 0.75; c.material.depthWrite = false; }
                 }
             });
 
             const ctrl = faultFolder.add(layerState[f.name], 'visible').name(f.name).onChange(v => {
-                modelGroup.children.forEach(c => {
+                allSurveyChildren().forEach(c => {
                     if (c.userData.layerName === f.name) c.visible = v;
                 });
                 try { localStorage.setItem('geo_layer_' + f.name, JSON.stringify(layerState[f.name])); } catch(e) {}
@@ -1445,7 +1566,7 @@ function applyState(state) {
     // Layers
     Object.keys(layerState).forEach(name => {
         const s = layerState[name];
-        modelGroup.children.forEach(c => {
+        allSurveyChildren().forEach(c => {
             if (c.userData.layerName === name) {
                 if (c.userData.isContour) {
                     c.userData.layerVisible = s.visible;
@@ -1454,7 +1575,10 @@ function applyState(state) {
                     c.visible = s.visible;
                     c.material.transparent = true;
                     // s.opacity may be undefined for fault layers — use existing value as fallback
-                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
+                    if (s.opacity !== undefined) {
+                        c.material.opacity = s.opacity;
+                        c.material.depthWrite = s.opacity >= 1;
+                    }
                 }
             }
         });
@@ -1465,7 +1589,7 @@ function applyState(state) {
     updateColoring(); // Handles depth coloring
 
     // Contours
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             c.material.uniforms.interval.value = params.contourInterval;
             c.material.uniforms.thickness.value = params.contourThickness;
@@ -1496,24 +1620,27 @@ function applyState(state) {
     hemiLight.intensity = params.hemiIntensity;
 
     // Model Transform
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = params.wireframe;
     });
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.flatShading = params.flatShading;
         c.material.needsUpdate = true;
     });
     modelGroup.scale.y = params.zScale;
 
-    // HD Survey Subregion — rebuild box and reapply texture displacement
-    rebuildSubregionBox();
-    // Depth exaggeration + texture (applyHorizonDepthExag chains into applyHorizonTexture)
+
+    // Depth exaggeration (applyHorizonDepthExag chains into applyHorizonPositions)
     applyHorizonDepthExag(params.horizonDepthExag);
     // Horizon footprint bounding box
     buildHorizonBBox();
     if (horizonBBox) {
-        horizonBBox.visible = params.horizonBBoxVisible;
+        horizonBBox.visible = params.norneBBoxVisible;
         horizonBBox.material.color.set(params.horizonBBoxColor);
+    }
+    if (volveBBox) {
+        volveBBox.visible = params.volveBBoxVisible;
+        volveBBox.material.color.set(params.horizonBBoxColor);
     }
     // Fault smoothing
     applyFaultSmoothing(params.faultSmoothIterations);
@@ -1646,6 +1773,113 @@ const FAULT_PALETTES = {
 let regionalMesh = null;
 let regionalContourMesh = null;
 
+// ── Recompute fit blend data from survey base meshes ────────────────────────
+// Called at load time and whenever survey position/rotation changes.
+// Gathers transformed vertices from both Norne Base and Hugin Fm Base (if their
+// respective fit toggles are enabled), merges into a single spatial hash, and
+// runs one BFS pass.  Whichever field's base is closest wins at each cell.
+function recomputeFitBlend() {
+    if (!regionalMesh) return;
+    const { rxArr, rzArr, yPriorSmooth } = regionalMesh.userData;
+    const W = regionalMesh.userData.gridW;
+    const H = regionalMesh.userData.gridH;
+    const N = W * H;
+
+    const fitConformDepth = new Float32Array(N);
+    const fitDistArr      = new Float32Array(N);
+    for (let i = 0; i < N; i++) { fitConformDepth[i] = -yPriorSmooth[i]; fitDistArr[i] = Infinity; }
+
+    // Helper: gather transformed raw vertices from a base mesh
+    function gatherBaseVerts(layerName, surveyGroup) {
+        const mesh = surveyGroup.children.find(m =>
+            m.userData.isHorizon && m.userData.layerName === layerName && !m.userData.isContour);
+        if (!mesh) return [];
+        surveyGroup.updateMatrix();
+        const mat4 = surveyGroup.matrix;
+        const rawPos = mesh.userData.rawHorizonPos;
+        const hIdx = mesh.geometry.index;
+        const hPosCount = rawPos.length / 3;
+        const usedVerts = new Set();
+        if (hIdx) { const arr = hIdx.array; for (let i = 0; i < arr.length; i++) usedVerts.add(arr[i]); }
+        const verts = [];
+        const _v = new THREE.Vector3();
+        for (let i = 0; i < hPosCount; i++) {
+            if (!usedVerts.has(i)) continue;
+            _v.set(rawPos[i*3], rawPos[i*3+1], rawPos[i*3+2]);
+            _v.applyMatrix4(mat4);
+            verts.push({ x: _v.x, y: _v.y, z: _v.z });
+        }
+        return verts;
+    }
+
+    // Collect vertices from whichever fields have fit enabled
+    let allVerts = [];
+    if (params.regionalFitToBase)  allVerts = allVerts.concat(gatherBaseVerts('Norne Base', norneSurveyGroup));
+    if (params.regionalFitToVolve) allVerts = allVerts.concat(gatherBaseVerts('Hugin Fm Base', volveSurveyGroup));
+
+    if (allVerts.length > 0) {
+        // Spatial hash (200m buckets)
+        const BUCKET = 200;
+        const hash = {};
+        for (const v of allVerts) {
+            const k = `${Math.round(v.x / BUCKET)},${Math.round(v.z / BUCKET)}`;
+            (hash[k] || (hash[k] = [])).push(v);
+        }
+
+        // Phase 1: seed cells near mesh vertices
+        const SEED_RADIUS = 3;
+        const SEED_THRESH2 = 300 * 300;
+        const seedMask = new Uint8Array(N);
+        for (let i = 0; i < N; i++) {
+            const rx = rxArr[i], rz = rzArr[i];
+            const bx = Math.round(rx / BUCKET), bz = Math.round(rz / BUCKET);
+            let minDist2 = Infinity, nearestY = 0;
+            for (let dx = -SEED_RADIUS; dx <= SEED_RADIUS; dx++) {
+                for (let dz = -SEED_RADIUS; dz <= SEED_RADIUS; dz++) {
+                    const bucket = hash[`${bx + dx},${bz + dz}`];
+                    if (!bucket) continue;
+                    for (const v of bucket) {
+                        const ddx = rx - v.x, ddz = rz - v.z;
+                        const d2 = ddx * ddx + ddz * ddz;
+                        if (d2 < minDist2) { minDist2 = d2; nearestY = v.y; }
+                    }
+                }
+            }
+            if (minDist2 <= SEED_THRESH2) {
+                seedMask[i] = 1;
+                fitConformDepth[i] = -nearestY;
+                fitDistArr[i] = 0;
+            }
+        }
+
+        // Phase 2: BFS flood fill
+        const gridDx = Math.abs(rxArr[1] - rxArr[0]) || 125;
+        const queue = new Int32Array(4 * N);
+        let qHead = 0, qTail = 0;
+        for (let i = 0; i < N; i++) if (seedMask[i]) queue[qTail++] = i;
+        while (qHead < qTail) {
+            const idx = queue[qHead++];
+            const ci = idx % W, cj = (idx - ci) / W;
+            const newDist = fitDistArr[idx] + gridDx;
+            const depth  = fitConformDepth[idx];
+            const tryNeighbour = (nIdx) => {
+                if (newDist < fitDistArr[nIdx]) {
+                    fitDistArr[nIdx] = newDist;
+                    fitConformDepth[nIdx] = depth;
+                    queue[qTail++] = nIdx;
+                }
+            };
+            if (ci > 0)     tryNeighbour(idx - 1);
+            if (ci < W - 1) tryNeighbour(idx + 1);
+            if (cj > 0)     tryNeighbour(idx - W);
+            if (cj < H - 1) tryNeighbour(idx + W);
+        }
+    }
+
+    regionalMesh.userData.fitConformDepth = fitConformDepth;
+    regionalMesh.userData.fitDistArr      = fitDistArr;
+}
+
 
 // 4-neighbour Laplacian smoothing on a flat W×H Float32Array.
 // returns a new array; does not mutate input.
@@ -1667,7 +1901,7 @@ function _laplacianSmoothGrid(arr, w, h) {
 
 async function loadRegionalHorizon() {
     let centerX = 0, centerY = 0;
-    modelGroup.children.forEach(m => {
+    allSurveyChildren().forEach(m => {
         if (m.userData.isHorizon && m.userData.centerX) { centerX = m.userData.centerX; centerY = m.userData.centerY; }
     });
 
@@ -1782,92 +2016,12 @@ async function loadRegionalHorizon() {
     regionalMesh.userData.yPriorSmooth = yPriorSmooth;
 
     // ── Runtime sampling of the actual Norne Base horizon mesh ───────────────
-    // Produces separate fitConformDepth / fitDistArr for fit mode only.
-    // The prior surface keeps its CSV-derived topology untouched.
-    // Initialize fitConformDepth = -yPriorSmooth so that outside the mesh
-    // footprint, the fit blend is identity (conformedY = yPriorSmooth → no dip).
-    const fitConformDepth = new Float32Array(N);
-    const fitDistArr      = new Float32Array(N);
-    for (let i = 0; i < N; i++) { fitConformDepth[i] = -yPriorSmooth[i]; fitDistArr[i] = Infinity; }
+    // Extracted to recomputeFitBlend() so it can be re-called when the survey
+    // position or rotation changes.  Called once at load time below.
+    recomputeFitBlend();
 
-    const norneBaseMesh = modelGroup.children.find(m =>
-        m.userData.isHorizon && m.userData.layerName === 'Norne Base' && !m.userData.isContour);
-    if (norneBaseMesh) {
-        const hPos = norneBaseMesh.geometry.attributes.position;
-        const hIdx = norneBaseMesh.geometry.index;
-        const usedVerts = new Set();
-        if (hIdx) { const arr = hIdx.array; for (let i = 0; i < arr.length; i++) usedVerts.add(arr[i]); }
-        const validVerts = [];
-        for (let i = 0; i < hPos.count; i++) {
-            if (!usedVerts.has(i)) continue;
-            validVerts.push({ x: hPos.getX(i), y: hPos.getY(i), z: hPos.getZ(i) });
-        }
-        console.log(`Norne Base mesh: ${validVerts.length} valid vertices for runtime sampling`);
-
-        // Spatial hash (200m buckets)
-        const BUCKET = 200;
-        const hash = {};
-        for (const v of validVerts) {
-            const k = `${Math.round(v.x / BUCKET)},${Math.round(v.z / BUCKET)}`;
-            (hash[k] || (hash[k] = [])).push(v);
-        }
-
-        // Phase 1: seed cells near mesh vertices
-        const SEED_RADIUS = 3;
-        const SEED_THRESH2 = 300 * 300;
-        const seedMask = new Uint8Array(N);
-        for (let i = 0; i < N; i++) {
-            const rx = rxArr[i], rz = rzArr[i];
-            const bx = Math.round(rx / BUCKET), bz = Math.round(rz / BUCKET);
-            let minDist2 = Infinity, nearestY = 0;
-            for (let dx = -SEED_RADIUS; dx <= SEED_RADIUS; dx++) {
-                for (let dz = -SEED_RADIUS; dz <= SEED_RADIUS; dz++) {
-                    const bucket = hash[`${bx + dx},${bz + dz}`];
-                    if (!bucket) continue;
-                    for (const v of bucket) {
-                        const ddx = rx - v.x, ddz = rz - v.z;
-                        const d2 = ddx * ddx + ddz * ddz;
-                        if (d2 < minDist2) { minDist2 = d2; nearestY = v.y; }
-                    }
-                }
-            }
-            if (minDist2 <= SEED_THRESH2) {
-                seedMask[i] = 1;
-                fitConformDepth[i] = -nearestY; // actual mesh depth (positive down)
-                fitDistArr[i] = 0;
-            }
-        }
-
-        // Phase 2: BFS flood fill — propagate distance AND depth from seeds.
-        // Non-seed cells inherit the nearest seed's mesh depth, so the fit
-        // blend can smoothly transition from mesh depth → yPriorSmooth.
-        const gridDx = Math.abs(rxArr[1] - rxArr[0]) || 125;
-        const queue = new Int32Array(4 * N);
-        let qHead = 0, qTail = 0;
-        for (let i = 0; i < N; i++) if (seedMask[i]) queue[qTail++] = i;
-        while (qHead < qTail) {
-            const idx = queue[qHead++];
-            const ci = idx % W, cj = (idx - ci) / W;
-            const newDist = fitDistArr[idx] + gridDx;
-            const depth  = fitConformDepth[idx];
-            const tryNeighbour = (nIdx) => {
-                if (newDist < fitDistArr[nIdx]) {
-                    fitDistArr[nIdx] = newDist;
-                    fitConformDepth[nIdx] = depth; // inherit nearest seed's depth
-                    queue[qTail++] = nIdx;
-                }
-            };
-            if (ci > 0)     tryNeighbour(idx - 1);
-            if (ci < W - 1) tryNeighbour(idx + 1);
-            if (cj > 0)     tryNeighbour(idx - W);
-            if (cj < H - 1) tryNeighbour(idx + W);
-        }
-        let seedCount = 0; for (let i = 0; i < N; i++) if (seedMask[i]) seedCount++;
-        console.log(`Regional conform: ${seedCount} seed cells, BFS distance field complete`);
-    }
-
-    regionalMesh.userData.fitConformDepth = fitConformDepth;
-    regionalMesh.userData.fitDistArr      = fitDistArr;
+    regionalMesh.userData.fitConformDepth = regionalMesh.userData.fitConformDepth || new Float32Array(N);
+    regionalMesh.userData.fitDistArr      = regionalMesh.userData.fitDistArr || new Float32Array(N);
 
     modelGroup.add(regionalMesh);
 
@@ -1891,6 +2045,10 @@ async function loadRegionalHorizon() {
 
     if (camera) { camera.far = Math.max(camera.far, 200000); camera.updateProjectionMatrix(); }
     console.log('Norne Base regional horizon loaded');
+
+    // Apply the fit blend according to the persisted toggle state
+    applyRegionalBlend(params.regionalBlendKm);
+
     return regionalMesh;
 }
 
@@ -1903,7 +2061,7 @@ function applyRegionalBlend(blendKm) {
     const { rxArr, rzArr, yPriorSmooth, fitConformDepth, fitDistArr } = regionalMesh.userData;
     const pos = regionalMesh.geometry.attributes.position;
 
-    if (!params.regionalFitToBase) {
+    if (!params.regionalFitToBase && !params.regionalFitToVolve) {
         // ── Prior mode ────────────────────────────────────────────────────────
         // y = yPriorSmooth everywhere. Simple, clean, no shift needed.
         for (let i = 0; i < pos.count; i++) {
@@ -2007,7 +2165,7 @@ function smoothRegionalContourY(iterations) {
 function applyFaultColoring() {
     const mode = params.faultColorMode;
     let faultIndex = 0;
-    modelGroup.children.forEach(mesh => {
+    allSurveyChildren().forEach(mesh => {
         if (!mesh.userData.isFault || mesh.userData.isContour) return;
         mesh.material.vertexColors = false;
         if (mode === 'uniform') {
@@ -2040,7 +2198,7 @@ function updateColoring() {
         if (params.depthColorPerLayer) {
             // ── Per-layer mode: each horizon coloured relative to its own depth extents ──
             // Good for showing within-surface topography on every layer simultaneously.
-            modelGroup.children.forEach(mesh => {
+            allSurveyChildren().forEach(mesh => {
                 if (skip(mesh)) return;
                 const pos = mesh.geometry.attributes.position;
                 const count = pos.count;
@@ -2066,7 +2224,7 @@ function updateColoring() {
             // ── Global mode: one shared depth range across all horizons (default) ──
             // Shows relative depth between layers — deepest layer = one end of palette.
             let minZ = Infinity, maxZ = -Infinity;
-            modelGroup.children.forEach(mesh => {
+            allSurveyChildren().forEach(mesh => {
                 if (skip(mesh)) return;
                 const pos = mesh.geometry.attributes.position;
                 for (let i = 0; i < pos.count; i++) {
@@ -2075,7 +2233,7 @@ function updateColoring() {
                 }
             });
             const range = maxZ - minZ || 1;
-            modelGroup.children.forEach(mesh => {
+            allSurveyChildren().forEach(mesh => {
                 if (skip(mesh)) return;
                 const pos = mesh.geometry.attributes.position;
                 const count = pos.count;
@@ -2093,7 +2251,7 @@ function updateColoring() {
         }
     } else {
         // Revert horizons to original colours
-        modelGroup.children.forEach(mesh => {
+        allSurveyChildren().forEach(mesh => {
             if (skip(mesh)) return;
             mesh.material.vertexColors = false;
             if (mesh.userData.originalColor) mesh.material.color.setHex(mesh.userData.originalColor);
@@ -2110,16 +2268,17 @@ _trackFolder(vizFolder, 'Visualization');
 
 vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
     modelGroup.scale.y = v;
+    buildWellTrajectories(); // re-counter-scale spheres
 });
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = v;
     });
 });
 
 vizFolder.add(params, 'flatShading').name('Sharp/Flat').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (!c.userData.isContour && !c.userData.isRegionalContour) {
             c.material.flatShading = v;
             c.material.needsUpdate = true;
@@ -2144,7 +2303,7 @@ const topoFolder = vizFolder.addFolder('Topology Lines');
 _trackFolder(topoFolder, 'Topology Lines');
 
 topoFolder.add(params, 'showContours').name('Enable').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             // Only show if global toggle is ON AND the parent layer is visible
             c.visible = v && c.userData.layerVisible;
@@ -2153,7 +2312,7 @@ topoFolder.add(params, 'showContours').name('Enable').onChange((v) => {
 });
 
 topoFolder.add(params, 'contourInterval', 10, 500).name('Interval').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             c.material.uniforms.interval.value = v;
         }
@@ -2161,7 +2320,7 @@ topoFolder.add(params, 'contourInterval', 10, 500).name('Interval').onChange((v)
 });
 
 topoFolder.add(params, 'contourThickness', 0.5, 5.0).name('Thickness').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             c.material.uniforms.thickness.value = v;
         }
@@ -2169,7 +2328,7 @@ topoFolder.add(params, 'contourThickness', 0.5, 5.0).name('Thickness').onChange(
 });
 
 topoFolder.add(params, 'contourOpacity', 0.1, 1.0).name('Opacity').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             c.material.uniforms.opacity.value = v;
         }
@@ -2177,7 +2336,7 @@ topoFolder.add(params, 'contourOpacity', 0.1, 1.0).name('Opacity').onChange((v) 
 });
 
 topoFolder.addColor(params, 'contourColor').name('Color').onChange((v) => {
-    modelGroup.children.forEach(c => {
+    allSurveyChildren().forEach(c => {
         if (c.userData.isContour) {
             c.material.uniforms.lineColor.value.set(v);
         }
@@ -2186,51 +2345,8 @@ topoFolder.addColor(params, 'contourColor').name('Color').onChange((v) => {
 
 // (Regional Context moved to its own top-level section below)
 
-const textureFolder = vizFolder.addFolder('HD Survey Subregion');
-_trackFolder(textureFolder, 'HD Survey Subregion');
 
 
-textureFolder.add(params, 'subregionEnabled').name('Enable Box').onChange(v => {
-    rebuildSubregionBox();
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-textureFolder.add(params, 'subregionX', -6000, 6000, 10).name('Position E-W (m)').onChange(v => {
-    if (subregionBox) subregionBox.position.x = v;
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-textureFolder.add(params, 'subregionZ', -7000, 7000, 10).name('Position N-S (m)').onChange(v => {
-    if (subregionBox) subregionBox.position.z = v;
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-// NOTE: subregionW and subregionD are persisted via the params Proxy.
-// These sliders ensure the restored values are visible after refresh.
-textureFolder.add(params, 'subregionW', 200, 5000, 10).name('Width E-W (m)').onChange(() => {
-    rebuildSubregionBox();
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-textureFolder.add(params, 'subregionD', 200, 10000, 10).name('Depth N-S (m)').onChange(() => {
-    rebuildSubregionBox();
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-textureFolder.add(params, 'useVolveTexture').name('Use Volve Texture').onChange(() => {
-    applyHorizonTexture(params.horizonTextureAmp);
-    updateColoring();
-});
-
-textureFolder.add(params, 'horizonTextureAmp', 0, 10, 0.1).name('Texture Amplitude').onChange(v => {
-    applyHorizonTexture(v);
-    updateColoring();
-});
 
 
 
@@ -2252,11 +2368,88 @@ lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
     hemiLight.intensity = v;
 });
 
+// ── Norne Survey Position ───────────────────────────────────────────────────
+const nornePosFolder = gui.addFolder('Norne Survey Position');
+_trackFolder(nornePosFolder, 'Norne Survey Position');
+function applyNorneSurveyOffset() {
+    norneSurveyGroup.position.x = params.surveyOffsetEastKm * 1000;
+    norneSurveyGroup.position.z = -params.surveyOffsetNorthKm * 1000;
+    norneSurveyGroup.position.y = -params.norneDepthOffsetM; // negative Y = deeper in scene
+    norneSurveyGroup.rotation.y = -params.surveyRotationDeg * Math.PI / 180;
+    norneSurveyGroup.scale.set(params.norneScale, params.norneScale, params.norneScale);
+    recomputeFitBlend();
+    if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
+}
+nornePosFolder.add(params, 'surveyOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyNorneSurveyOffset);
+nornePosFolder.add(params, 'surveyOffsetNorthKm', -20, 20, 0.5).name('North/South (km)').onChange(applyNorneSurveyOffset);
+nornePosFolder.add(params, 'surveyRotationDeg', -180, 180, 1).name('Rotation (°)').onChange(applyNorneSurveyOffset);
+nornePosFolder.add(params, 'norneScale', 0.1, 5, 0.1).name('Scale').onChange(applyNorneSurveyOffset);
+nornePosFolder.add(params, 'norneDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyNorneSurveyOffset);
+applyNorneSurveyOffset();
+
+// ── Volve Survey Position ───────────────────────────────────────────────────
+const volvePosFolder = gui.addFolder('Volve Survey Position');
+_trackFolder(volvePosFolder, 'Volve Survey Position');
+function applyVolveSurveyOffset() {
+    volveSurveyGroup.position.x = params.volveOffsetEastKm * 1000;
+    volveSurveyGroup.position.z = -params.volveOffsetNorthKm * 1000;
+    volveSurveyGroup.position.y = -params.volveDepthOffsetM;
+    volveSurveyGroup.rotation.y = -params.volveRotationDeg * Math.PI / 180;
+    volveSurveyGroup.scale.set(params.volveScale, params.volveScale, params.volveScale);
+    recomputeFitBlend();
+    if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
+}
+volvePosFolder.add(params, 'volveOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyVolveSurveyOffset);
+volvePosFolder.add(params, 'volveOffsetNorthKm', -25, 25, 0.5).name('North/South (km)').onChange(applyVolveSurveyOffset);
+volvePosFolder.add(params, 'volveRotationDeg', -180, 180, 1).name('Rotation (°)').onChange(applyVolveSurveyOffset);
+volvePosFolder.add(params, 'volveScale', 0.1, 5, 0.1).name('Scale').onChange(applyVolveSurveyOffset);
+volvePosFolder.add(params, 'volveDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyVolveSurveyOffset);
+applyVolveSurveyOffset();
+
+// ── Wells — top-level panel section ─────────────────────────────────────────
+const wellFolder = gui.addFolder('Wells');
+_trackFolder(wellFolder, 'Wells');
+
+const wellPosFolder = wellFolder.addFolder('Position');
+function applyWellOffset() {
+    wellGroup.position.x = params.wellOffsetEastKm * 1000;
+    wellGroup.position.z = -params.wellOffsetNorthKm * 1000;
+    wellGroup.position.y = -params.wellDepthOffsetM;
+    wellGroup.rotation.y = -params.wellRotationDeg * Math.PI / 180;
+    wellGroup.scale.set(params.wellScale, params.wellScale, params.wellScale);
+}
+wellPosFolder.add(params, 'wellOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyWellOffset);
+wellPosFolder.add(params, 'wellOffsetNorthKm', -25, 25, 0.5).name('North/South (km)').onChange(applyWellOffset);
+wellPosFolder.add(params, 'wellRotationDeg', -180, 180, 1).name('Rotation (°)').onChange(applyWellOffset);
+wellPosFolder.add(params, 'wellScale', 0.1, 5, 0.1).name('Scale').onChange(applyWellOffset);
+wellPosFolder.add(params, 'wellDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyWellOffset);
+applyWellOffset();
+
+const wellTrajFolder = wellFolder.addFolder('Trajectory');
+wellTrajFolder.add(params, 'showLateral1').name('Lateral 1').onChange(() => buildWellTrajectories());
+wellTrajFolder.addColor(params, 'lat1Color').name('Lat 1 Color').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'showLateral2').name('Lateral 2').onChange(() => buildWellTrajectories());
+wellTrajFolder.addColor(params, 'lat2Color').name('Lat 2 Color').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'lat2RotationDeg', -180, 180, 1).name('Lat 2 Rotation (°)').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellTubeRadius', 1, 30, 1).name('Tube Radius (m)').onChange(() => buildWellTrajectories());
+
+const wellTargetFolder = wellFolder.addFolder('Targets');
+wellTargetFolder.add(params, 'wellShowTargets').name('Show Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.addColor(params, 'wellTargetColor').name('Color').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'wellTargetSize', 10, 200, 5).name('Size (m)').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'lat1LP1Position', 0, 5, 0.1).name('LP1 Position').onChange(() => buildWellTrajectories());
+
+// Build wells on first load
+buildWellTrajectories();
+
 // ── Regional Context — top-level panel section ──────────────────────────────
-const regionalFolder = gui.addFolder('Regional Context (Norne Base)');
+const regionalFolder = gui.addFolder('Regional Context');
 _trackFolder(regionalFolder, 'Regional Context');
 regionalFolder.add(params, 'regionalFitToBase').name('Fit to Norne Base')
-    .onChange(() => applyRegionalBlend(params.regionalBlendKm));
+    .onChange(() => { recomputeFitBlend(); applyRegionalBlend(params.regionalBlendKm); });
+regionalFolder.add(params, 'regionalFitToVolve').name('Fit to Hugin Fm Base')
+    .onChange(() => { recomputeFitBlend(); applyRegionalBlend(params.regionalBlendKm); });
 regionalFolder.add(params, 'regionalOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
     if (regionalMesh) { regionalMesh.material.opacity = v; regionalMesh.material.needsUpdate = true; }
 });
@@ -2267,7 +2460,7 @@ regionalFolder.add(params, 'regionalBlendKm', 0, 60, 0.5).name('Topology Falloff
     rebuildRegionalPrior();
 });
 regionalFolder.add(params, 'regionalFitBlendKm', 0.5, 15, 0.5).name('Fit Blend (km)').onChange(() => {
-    if (params.regionalFitToBase) applyRegionalBlend(params.regionalBlendKm);
+    if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
 });
 regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
     if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
@@ -2498,7 +2691,7 @@ async function initNorneData() {
         mesh.userData.centerX = centerX;
         mesh.userData.centerY = centerY;
         mesh.userData.rawHorizonPos = Float32Array.from(geometry.attributes.position.array);
-        modelGroup.add(mesh);
+        norneSurveyGroup.add(mesh);
 
 
         // Contour overlay
@@ -2507,7 +2700,7 @@ async function initNorneData() {
         cMesh.renderOrder = 1;
         cMesh.userData.isContour = true;
         cMesh.userData.layerName = h.name;
-        modelGroup.add(cMesh);
+        norneSurveyGroup.add(cMesh);
     });
 
     // ── Fault meshes: fault-stick ribbon approach ──────────────────────────
@@ -2555,7 +2748,7 @@ async function initNorneData() {
                 transparent: true, opacity: 0.8
             }));
             cloud.userData = { layerName: f.name, originalColor: f.color, isFault: true };
-            modelGroup.add(cloud);
+            norneSurveyGroup.add(cloud);
             return;
         }
 
@@ -2701,7 +2894,7 @@ async function initNorneData() {
         mesh.userData.validStripIndices = validStripIndices;
         mesh.userData.centerX = centerX;
         mesh.userData.centerY = centerY;
-        modelGroup.add(mesh);
+        norneSurveyGroup.add(mesh);
 
     });
 
@@ -2734,7 +2927,7 @@ async function initNorneData() {
     const allLayers = [...validHorizons, ...validFaults];
     initLayerControls(allLayers);
     applyFaultSmoothing(params.faultSmoothIterations);
-    if (params.horizonTextureAmp > 0) applyHorizonDepthExag(params.horizonDepthExag);
+    applyHorizonDepthExag(params.horizonDepthExag);
     loadRegionalHorizon(); // async — adds ghost surface once CSV loads
 
 
@@ -2754,9 +2947,20 @@ async function initNorneData() {
 // ─────────────────────────────────────────────────────────────
 
 function clearScene() {
-    // Dispose all GPU resources
-    while (modelGroup.children.length > 0) {
-        const obj = modelGroup.children[0];
+    // Dispose all survey objects from both survey groups
+    [norneSurveyGroup, volveSurveyGroup].forEach(group => {
+        while (group.children.length > 0) {
+            const obj = group.children[0];
+            group.remove(obj);
+            obj.geometry?.dispose();
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material?.dispose();
+        }
+    });
+    // Dispose regional objects from modelGroup (skip survey groups)
+    for (let i = modelGroup.children.length - 1; i >= 0; i--) {
+        const obj = modelGroup.children[i];
+        if (obj === norneSurveyGroup || obj === volveSurveyGroup) continue;
         modelGroup.remove(obj);
         obj.geometry?.dispose();
         if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
@@ -2764,6 +2968,7 @@ function clearScene() {
     }
     // Rebuild the Horizons and Faults folders so only new-field layers appear
     horizonBBox  = null; // geometry was disposed by the loop above
+    volveBBox    = null;
     seismicPanel = null; // likewise
     _obbState    = null;
     horizonFolder.destroy();
@@ -2777,29 +2982,47 @@ function clearScene() {
     faultFolder.close();
 }
 
-async function loadDataset(datasetName) {
-    updateLoading('Switching dataset...');
-    clearScene();
-    controls.target.set(0, 0, 0);
-    camera.position.set(2000, 2000, 2000);
 
-    // Keep the dropdown in sync and persist the choice
-    document.getElementById('dataset-select').value = datasetName;
-    localStorage.setItem('geo_active_field', datasetName);
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// COMPASS HUD
+// ─────────────────────────────────────────────────────────────
+const compassEl = document.createElement('div');
+compassEl.id = 'compass-hud';
+compassEl.innerHTML = `
+<svg viewBox="-50 -50 100 100" width="80" height="80">
+  <circle cx="0" cy="0" r="46" fill="rgba(0,0,0,0.5)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+  <!-- Tick marks -->
+  <line x1="0" y1="-42" x2="0" y2="-36" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>
+  <line x1="0" y1="36" x2="0" y2="42" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+  <line x1="-42" y1="0" x2="-36" y2="0" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+  <line x1="36" y1="0" x2="42" y2="0" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+  <!-- North needle (red) -->
+  <polygon points="0,-34 -5,-8 5,-8" fill="#e74c3c" opacity="0.9"/>
+  <!-- South needle (white) -->
+  <polygon points="0,34 -5,8 5,8" fill="rgba(255,255,255,0.35)"/>
+  <!-- Labels -->
+  <text x="0" y="-22" text-anchor="middle" font-size="11" font-weight="700" fill="#e74c3c" font-family="Inter,sans-serif">N</text>
+  <text x="0" y="28" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.4)" font-family="Inter,sans-serif">S</text>
+  <text x="26" y="4" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.4)" font-family="Inter,sans-serif">E</text>
+  <text x="-26" y="4" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.4)" font-family="Inter,sans-serif">W</text>
+  <!-- Center dot -->
+  <circle cx="0" cy="0" r="3" fill="rgba(255,255,255,0.6)"/>
+</svg>`;
+compassEl.style.cssText = 'position:fixed;bottom:24px;left:24px;z-index:100;pointer-events:none;';
+document.body.appendChild(compassEl);
+const compassSvg = compassEl.querySelector('svg');
 
-    if (datasetName === 'volve') {
-        await initVolveData();
-    } else if (datasetName === 'norne') {
-        await initNorneData();
-    }
+function updateCompass() {
+    // Camera look direction projected onto XZ plane
+    // In this scene: +X = East, -Z = North
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    // atan2 gives angle from +X axis; we want angle from North (-Z)
+    // North (-Z) is at angle = π/2 from +X in standard atan2
+    const azimuth = Math.atan2(dir.x, -dir.z); // radians, 0 = looking north
+    compassSvg.style.transform = `rotate(${-azimuth * 180 / Math.PI}deg)`;
 }
-
-// ─────────────────────────────────────────────────────────────
-// DATASET DROPDOWN
-// ─────────────────────────────────────────────────────────────
-document.getElementById('dataset-select').addEventListener('change', e => {
-    loadDataset(e.target.value);
-});
 
 // ─────────────────────────────────────────────────────────────
 // ANIMATE
@@ -2807,6 +3030,7 @@ document.getElementById('dataset-select').addEventListener('change', e => {
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
+    updateCompass();
     renderer.render(scene, camera);
 }
 
@@ -2816,8 +3040,34 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Boot — restore last selected field (default to volve)
-const savedField = localStorage.getItem('geo_active_field') || 'volve';
-document.getElementById('dataset-select').value = savedField;
-loadDataset(savedField);
+// Boot — load both fields simultaneously
+(async () => {
+    await initNorneData();   // Norne first (owns regional surface + camera setup)
+    await initVolveData();   // Volve overlaid on the same regional context
+
+    // Post-boot fixup: Volve wasn't loaded when applyState ran during initNorneData,
+    // so re-apply fit blend and per-layer opacity/depthWrite for all horizons.
+    recomputeFitBlend();
+    if (params.regionalFitToBase || params.regionalFitToVolve) {
+        applyRegionalBlend(params.regionalBlendKm);
+    }
+
+    // Rebuild bounding boxes now that both surveys have their horizons loaded
+    buildHorizonBBox();
+
+    // Re-apply stored opacity + depthWrite for layers loaded after applyState
+    allSurveyChildren().forEach(c => {
+        if (c.userData.layerName) {
+            try {
+                const saved = JSON.parse(localStorage.getItem('geo_layer_' + c.userData.layerName) || 'null');
+                if (saved && saved.opacity !== undefined) {
+                    c.material.transparent = true;
+                    c.material.opacity = saved.opacity;
+                    c.material.depthWrite = saved.opacity >= 1;
+                    c.material.needsUpdate = true;
+                }
+            } catch(e) {}
+        }
+    });
+})();
 animate();
