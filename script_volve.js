@@ -959,6 +959,7 @@ function buildWellTrajectories() {
                 transparent: true,
                 opacity: params.wellTargetOpacity,
                 depthWrite: false,
+                depthTest: false,
                 side: THREE.DoubleSide,
                 shininess: 80,
             });
@@ -977,6 +978,7 @@ function buildWellTrajectories() {
                 transparent: true,
                 opacity: Math.min(1, params.wellTargetOpacity * 1.5),
                 depthWrite: false,
+                depthTest: false,
                 side: THREE.DoubleSide,
             });
             const hRing = new THREE.Mesh(hRingGeo, ringMat);
