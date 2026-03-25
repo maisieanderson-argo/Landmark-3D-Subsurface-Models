@@ -906,20 +906,6 @@ function buildWellTrajectories() {
             wellGroup.add(vRing);
         }
     }
-
-    // ── Surface grid (represents ground level at wellhead) ────────────────
-    if (params.showSurfaceGrid) {
-        const gridSize = params.surfaceGridSize;
-        const gridDiv  = params.surfaceGridDivisions;
-        const gridColor = new THREE.Color(params.surfaceGridColor);
-        const grid = new THREE.GridHelper(gridSize, gridDiv, gridColor, gridColor);
-        grid.material.transparent = true;
-        grid.material.opacity = 0.4;
-        grid.material.depthWrite = false;
-        grid.position.y = 0; // surface level
-        grid.userData = { isWell: true, isSurfaceGrid: true };
-        wellGroup.add(grid);
-    }
 }
 
 // Add Custom UI Styles and HTML
@@ -1221,10 +1207,7 @@ const _paramsDefaults = {
     wellDepthOffsetM: 0,
     lat2RotationDeg: 0,                // Lateral 2 rotation around its KOP (°)
     lat1LP1Position: 4.5,              // LP1 target position along Lateral 1 (turn point index)
-    showSurfaceGrid: true,             // show a grid at the wellhead surface (y=0)
-    surfaceGridSize: 4000,             // grid extent in metres (4 km)
-    surfaceGridDivisions: 20,          // number of grid cells
-    surfaceGridColor: '#4a6a8a',       // grid line color
+
 };
 
 // Merge any previously saved values over the defaults
@@ -2619,11 +2602,7 @@ wellTargetFolder.add(params, 'wellTargetSize', 10, 200, 5).name('Size (m)').onCh
 wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'lat1LP1Position', 0, 5, 0.1).name('LP1 Position').onChange(() => buildWellTrajectories());
 
-const wellGridFolder = wellFolder.addFolder('Surface Grid');
-wellGridFolder.add(params, 'showSurfaceGrid').name('Show Grid').onChange(() => buildWellTrajectories());
-wellGridFolder.add(params, 'surfaceGridSize', 500, 10000, 100).name('Size (m)').onChange(() => buildWellTrajectories());
-wellGridFolder.add(params, 'surfaceGridDivisions', 4, 40, 1).name('Divisions').onChange(() => buildWellTrajectories());
-wellGridFolder.addColor(params, 'surfaceGridColor').name('Color').onChange(() => buildWellTrajectories());
+
 
 // Build wells on first load
 buildWellTrajectories();
