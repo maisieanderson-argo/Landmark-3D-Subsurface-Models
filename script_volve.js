@@ -816,7 +816,8 @@ function buildWellTrajectories() {
 
         const baseColor = new THREE.Color(params[wb.colorParam]);
 
-        // Tube segments per turn-point-delimited section
+        // Collect all world-space points for this wellbore (needed for dots mode)
+        const allPts = [];
         for (let tpIdx = 0; tpIdx < wb.turnPoints.length - 1; tpIdx++) {
             const startSt = tpIdx * WELL_INTERP_STEPS;
             const endSt   = Math.min((tpIdx + 1) * WELL_INTERP_STEPS, stations.length - 1);
@@ -830,7 +831,6 @@ function buildWellTrajectories() {
 
             // Rotate Lateral 2/4 around its KOP junction
             if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
-                const pivot = pts[0].clone();
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -852,28 +852,37 @@ function buildWellTrajectories() {
                 const tube = new THREE.Mesh(tubeGeo, tubeMat);
                 tube.userData = { isWell: true, wellbore: wb.name };
                 wellGroup.add(tube);
-            } else {
-                // Dots mode: place spheres along the CatmullRom curve
-                const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
-                const dotCount = Math.max(pts.length * 3, 20);
-                const dotGeo = new THREE.SphereGeometry(params.wellDotSize, 8, 8);
-                const dotMat = new THREE.MeshPhongMaterial({
-                    color: baseColor,
-                    emissive: baseColor.clone().multiplyScalar(0.15),
-                    shininess: 60,
-                });
-                const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
-                const dummy = new THREE.Object3D();
-                for (let d = 0; d < dotCount; d++) {
-                    const p = curve.getPointAt(d / (dotCount - 1));
-                    dummy.position.copy(p);
-                    dummy.updateMatrix();
-                    instanced.setMatrixAt(d, dummy.matrix);
-                }
-                instanced.instanceMatrix.needsUpdate = true;
-                instanced.userData = { isWell: true, wellbore: wb.name };
-                wellGroup.add(instanced);
             }
+
+            // Accumulate points for whole-well dots curve (skip duplicates at segment boundaries)
+            for (let i = (tpIdx === 0 ? 0 : 1); i < pts.length; i++) {
+                allPts.push(pts[i]);
+            }
+        }
+
+        // Dots mode: single curve across the whole well, evenly spaced dots
+        if (params.wellPathStyle === 'dots' && allPts.length >= 2) {
+            const curve = new THREE.CatmullRomCurve3(allPts, false, 'catmullrom', 0.5);
+            const totalLength = curve.getLength();
+            const spacing = params.wellDotSpacing;
+            const dotCount = Math.max(2, Math.floor(totalLength / spacing));
+            const dotGeo = new THREE.SphereGeometry(params.wellDotSize, 8, 8);
+            const dotMat = new THREE.MeshPhongMaterial({
+                color: baseColor,
+                emissive: baseColor.clone().multiplyScalar(0.15),
+                shininess: 60,
+            });
+            const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
+            const dummy = new THREE.Object3D();
+            for (let d = 0; d < dotCount; d++) {
+                const p = curve.getPointAt(d / (dotCount - 1));
+                dummy.position.copy(p);
+                dummy.updateMatrix();
+                instanced.setMatrixAt(d, dummy.matrix);
+            }
+            instanced.instanceMatrix.needsUpdate = true;
+            instanced.userData = { isWell: true, wellbore: wb.name };
+            wellGroup.add(instanced);
         }
 
         // Wellhead sphere
@@ -887,18 +896,19 @@ function buildWellTrajectories() {
             });
             const head = new THREE.Mesh(headGeo, headMat);
             head.position.copy(headPos);
-            head.scale.y = 1 / (params.zScale || 1); // counter depth exaggeration
+            head.scale.y = 1 / (params.zScale || 1);
             head.userData = { isWell: true, wellbore: wb.name };
             wellGroup.add(head);
         }
 
-        // Turn point markers (small orbs at each turn point)
+        // Turn point markers — skip in dots mode
+        if (params.wellPathStyle !== 'dots') {
         for (let tpIdx = 0; tpIdx < wb.turnPoints.length; tpIdx++) {
             const stationIdx = Math.min(tpIdx * WELL_INTERP_STEPS, stations.length - 1);
             const s = stations[stationIdx];
             const tpPos = wellToWorld(s.northing, s.easting, s.tvd);
 
-            // Rotate Lateral 2 turn point markers around KOP
+            // Rotate Lateral 2/4 turn point markers around KOP
             if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
@@ -919,7 +929,7 @@ function buildWellTrajectories() {
             marker.userData = { isWell: true, wellbore: wb.name, isTurnPoint: true, tpIdx };
             wellGroup.add(marker);
         }
-
+        } // end if not dots
         // TD sphere
         const td = stations[stations.length - 1];
         const tdPos = wellToWorld(td.northing, td.easting, td.tvd);
@@ -1307,6 +1317,7 @@ const _paramsDefaults = {
     wellTubeRadius: 8,                 // metres (scene units)
     wellPathStyle: 'tube',             // 'tube' or 'dots'
     wellDotSize: 5,                    // dot radius in metres
+    wellDotSpacing: 20,                // metres between dots
     wellShowTargets: true,
     showLat1Targets: true,
     showLat2Targets: true,
@@ -2713,6 +2724,7 @@ wellTrajFolder.addColor(params, 'lat4Color').name('Lat 4 Color').onChange(() => 
 wellTrajFolder.add(params, 'wellPathStyle', ['tube', 'dots']).name('Path Style').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'wellTubeRadius', 1, 30, 1).name('Tube Radius (m)').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'wellDotSize', 1, 15, 0.5).name('Dot Size (m)').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellDotSpacing', 5, 100, 5).name('Dot Spacing (m)').onChange(() => buildWellTrajectories());
 
 const wellTargetFolder = wellFolder.addFolder('Targets');
 wellTargetFolder.add(params, 'wellShowTargets').name('Show All Targets').onChange(() => buildWellTrajectories());
