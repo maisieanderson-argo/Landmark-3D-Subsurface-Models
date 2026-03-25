@@ -655,21 +655,17 @@ const LATERAL2_TURN_POINTS = [
     { sectionType: 'Lateral',       md: 10650.0, inc: 82.00, azi: 230.00, tvd: 4080.0, northing: 12140685.00, easting: 2559202.00, target: 'BHL2' },
 ];
 
-// Lateral 3 — higher KOP (1200 ft), smoother dogleg to same LP1/BHL targets as Lateral 1
+// Lateral 3 — higher KOP (1200 ft), single dogleg to same LP1/BHL targets as Lateral 1
 const LATERAL3_TURN_POINTS = [
     { sectionType: 'Tie Line',      md: 0.0,     inc: 0.00,  azi: 0.00,   tvd: 0.0,    northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
     { sectionType: 'Straight MD',   md: 1200.0,  inc: 0.00,  azi: 0.00,   tvd: 1200.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
-    { sectionType: 'OPT AL DLS',    md: 1800.0,  inc: 20.00, azi: 215.50, tvd: 1770.0, northing: 12145930.00, easting: 2564480.00, target: '' },
-    { sectionType: 'OPT AL DLS',    md: 2500.0,  inc: 42.00, azi: 215.50, tvd: 2310.0, northing: 12145800.00, easting: 2564380.00, target: '' },
     { sectionType: 'Build + Turn',  md: 3315.5,  inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145538.01, easting: 2564064.95, target: 'LP1' },
     { sectionType: 'Lateral',       md: 13359.0, inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145537.99, easting: 2554222.58, target: 'BHL' },
 ];
 
-// Lateral 4 — higher KOP (1200 ft), smoother dogleg to same LP2/BHL2 targets as Lateral 2
+// Lateral 4 — higher KOP (1200 ft), single dogleg to same LP2/BHL2 targets as Lateral 2
 const LATERAL4_TURN_POINTS = [
     { sectionType: 'KOP Junction',  md: 1200.0,  inc: 0.00,  azi: 175.00, tvd: 1200.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
-    { sectionType: 'OPT AL DLS',    md: 1900.0,  inc: 22.00, azi: 175.00, tvd: 1860.0, northing: 12145850.00, easting: 2564575.00, target: '' },
-    { sectionType: 'OPT AL DLS',    md: 2600.0,  inc: 45.00, azi: 175.00, tvd: 2420.0, northing: 12145650.00, easting: 2564600.00, target: '' },
     { sectionType: 'Build + Turn',  md: 3650.0,  inc: 82.00, azi: 230.00, tvd: 3105.0, northing: 12145139.00, easting: 2564512.00, target: 'LP2' },
     { sectionType: 'Lateral',       md: 10650.0, inc: 82.00, azi: 230.00, tvd: 4080.0, northing: 12140685.00, easting: 2559202.00, target: 'BHL2' },
 ];
@@ -679,8 +675,8 @@ const WELL_TARGETS = [
     { name: 'BHL',  wellbore: 'Lateral 1', tpIndex: 5 },
     { name: 'LP2',  wellbore: 'Lateral 2', tpIndex: 4 },
     { name: 'LP1',  wellbore: 'Lateral 3', tpIndexParam: 'lat1LP1Position' },
-    { name: 'BHL',  wellbore: 'Lateral 3', tpIndex: 5 },
-    { name: 'LP2',  wellbore: 'Lateral 4', tpIndex: 4 },
+    { name: 'BHL',  wellbore: 'Lateral 3', tpIndex: 3 },
+    { name: 'LP2',  wellbore: 'Lateral 4', tpIndex: 1 },
 ];
 
 const WELL_DEFS = [
