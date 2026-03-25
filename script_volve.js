@@ -430,14 +430,18 @@ async function initVolveData() {
     const centerY = sumY / count;
     console.log(`Center calculated: ${centerX}, ${centerY}`);
 
-    // 2. Build Meshes
+    // 2. Build Meshes (decimated — skip every DECIMATE-th IL/XL for performance)
+    const VOLVE_DECIMATE = 2; // keep every 2nd IL/XL → 4× fewer vertices; set to 1 for full res
     validHorizons.forEach(h => {
         console.log(`Building mesh for ${h.name}...`);
-        // Grid dimensions
-        const width = h.maxIL - h.minIL + 1;
-        const height = h.maxXL - h.minXL + 1;
+        // Original grid dimensions
+        const fullWidth  = h.maxIL - h.minIL + 1;
+        const fullHeight = h.maxXL - h.minXL + 1;
+        // Decimated grid
+        const width  = Math.ceil(fullWidth  / VOLVE_DECIMATE);
+        const height = Math.ceil(fullHeight / VOLVE_DECIMATE);
 
-        console.log(`Grid size: ${width} x ${height}`);
+        console.log(`Grid size: ${fullWidth} x ${fullHeight} → decimated ${width} x ${height} (factor ${VOLVE_DECIMATE})`);
 
         if (width <= 0 || height <= 0 || !isFinite(width) || !isFinite(height)) {
             console.error(`Invalid grid dimensions for ${h.name}: ${width}x${height}`);
@@ -461,8 +465,8 @@ async function initVolveData() {
         let validPoints = 0;
         for (let ix = 0; ix < width; ix++) {
             for (let iy = 0; iy < height; iy++) {
-                const il = h.minIL + ix;
-                const xl = h.minXL + iy;
+                const il = h.minIL + ix * VOLVE_DECIMATE;
+                const xl = h.minXL + iy * VOLVE_DECIMATE;
                 const pt = h.data[`${il}_${xl}`];
 
                 const idx = iy * width + ix;
