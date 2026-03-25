@@ -533,6 +533,34 @@ async function initVolveData() {
         }
         console.log(`Mesh built with ${validPoints} valid + ${width * height - validPoints} filled vertices`);
 
+        // Smooth only the filled (non-original) vertices to flatten curled corners
+        // Track which vertices are original data vs filled
+        const isOriginal = new Uint8Array(width * height);
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const il = h.minIL + ix * VOLVE_DECIMATE;
+                const xl = h.minXL + iy * VOLVE_DECIMATE;
+                if (h.data[`${il}_${xl}`]) isOriginal[iy * width + ix] = 1;
+            }
+        }
+        for (let pass = 0; pass < 5; pass++) {
+            for (let ix = 0; ix < width; ix++) {
+                for (let iy = 0; iy < height; iy++) {
+                    const idx = iy * width + ix;
+                    if (isOriginal[idx]) continue; // don't touch real data
+                    let sx = 0, sy = 0, sz = 0, cnt = 0;
+                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
+                        const nx = ix + dx, ny = iy + dy;
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        const ni = ny * width + nx;
+                        sx += posAttr.getX(ni); sy += posAttr.getY(ni); sz += posAttr.getZ(ni);
+                        cnt++;
+                    }
+                    if (cnt > 0) posAttr.setXYZ(idx, sx / cnt, sy / cnt, sz / cnt);
+                }
+            }
+        }
+
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
 
