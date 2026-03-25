@@ -776,12 +776,18 @@ function buildWellTrajectories() {
         wellGroup.add(tdMesh);
     }
 
-    // Target orbs
+    // Target orbs — rendered independently of well tube visibility
     if (params.wellShowTargets) {
         const tColor = new THREE.Color(params.wellTargetColor);
+        const ringTubeRadius = Math.max(1, params.wellTargetSize * 0.04); // thin ring tube
         for (const tgt of WELL_TARGETS) {
             const wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
-            if (!wb || !params[wb.visParam]) continue;
+            if (!wb) continue;
+            // Need stations even if the well tube is hidden — compute if missing
+            if (!wellStations.has(wb.name)) {
+                const stns = minimumCurvature(wb.turnPoints, WELL_INTERP_STEPS);
+                wellStations.set(wb.name, stns);
+            }
 
             const stns = wellStations.get(wb.name);
             const tpIdx = tgt.tpIndexParam ? params[tgt.tpIndexParam] : tgt.tpIndex;
@@ -815,6 +821,31 @@ function buildWellTrajectories() {
             orb.name = `target-${tgt.name}`;
             orb.userData = { isWell: true, isTarget: true };
             wellGroup.add(orb);
+
+            // ── Horizontal ring (lies flat in XZ plane) ──────────────────────
+            const hRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.3, ringTubeRadius, 12, 48);
+            const ringMat = new THREE.MeshPhongMaterial({
+                color: tColor,
+                emissive: tColor.clone().multiplyScalar(0.15),
+                transparent: true,
+                opacity: Math.min(1, params.wellTargetOpacity * 1.5),
+                depthWrite: false,
+                side: THREE.DoubleSide,
+            });
+            const hRing = new THREE.Mesh(hRingGeo, ringMat);
+            hRing.position.copy(pos);
+            hRing.scale.y = 1 / (params.zScale || 1);
+            hRing.userData = { isWell: true, isTarget: true };
+            wellGroup.add(hRing);
+
+            // ── Vertical ring (stands upright in XY plane) ───────────────────
+            const vRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.3, ringTubeRadius, 12, 48);
+            const vRing = new THREE.Mesh(vRingGeo, ringMat.clone());
+            vRing.position.copy(pos);
+            vRing.rotation.x = Math.PI / 2; // rotate 90° to stand vertical
+            vRing.scale.y = 1 / (params.zScale || 1);
+            vRing.userData = { isWell: true, isTarget: true };
+            wellGroup.add(vRing);
         }
     }
 }
