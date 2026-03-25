@@ -924,7 +924,7 @@ function buildWellTrajectories() {
             wellGroup.add(orb);
 
             // ── Horizontal ring (lies flat in XZ plane) ──────────────────────
-            const hRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.3, ringTubeRadius, 12, 48);
+            const hRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.625, ringTubeRadius, 12, 48);
             const ringMat = new THREE.MeshPhongMaterial({
                 color: tColor,
                 emissive: tColor.clone().multiplyScalar(0.15),
@@ -938,15 +938,6 @@ function buildWellTrajectories() {
             hRing.scale.y = 1 / (params.zScale || 1);
             hRing.userData = { isWell: true, isTarget: true };
             wellGroup.add(hRing);
-
-            // ── Vertical ring (stands upright in XY plane) ───────────────────
-            const vRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.3, ringTubeRadius, 12, 48);
-            const vRing = new THREE.Mesh(vRingGeo, ringMat.clone());
-            vRing.position.copy(pos);
-            vRing.rotation.x = Math.PI / 2; // rotate 90° to stand vertical
-            vRing.scale.y = 1 / (params.zScale || 1);
-            vRing.userData = { isWell: true, isTarget: true };
-            wellGroup.add(vRing);
         }
     }
 }
