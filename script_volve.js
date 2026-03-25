@@ -478,8 +478,10 @@ async function initVolveData() {
         }
 
         // Fill missing vertices from neighbours so the sheet is rectangular
-        // Two passes to propagate from edges inward
-        for (let pass = 0; pass < 2; pass++) {
+        // Enough passes to propagate across the widest gap
+        const maxPasses = Math.max(width, height);
+        for (let pass = 0; pass < maxPasses; pass++) {
+            let anyFilled = false;
             for (let ix = 0; ix < width; ix++) {
                 for (let iy = 0; iy < height; iy++) {
                     const idx = iy * width + ix;
@@ -499,29 +501,33 @@ async function initVolveData() {
                     if (cnt > 0) {
                         posAttr.setXYZ(idx, sx / cnt, sy / cnt, sz / cnt);
                         filled[idx] = 1;
+                        anyFilled = true;
                     }
                 }
             }
+            if (!anyFilled) break; // all holes filled
         }
-        // Any remaining holes get the layer average depth at interpolated XY
+        // Safety: any still-unfilled vertex copies nearest filled neighbour
         for (let ix = 0; ix < width; ix++) {
             for (let iy = 0; iy < height; iy++) {
                 const idx = iy * width + ix;
-                if (!filled[idx]) {
-                    // Estimate XY from grid position using the grid's spatial extent
-                    const fx = ix / (width - 1), fy = iy / (height - 1);
-                    // Find bounding XY from first and last valid points
-                    const firstPt = h.data[`${h.minIL}_${h.minXL}`];
-                    const lastPt  = h.data[`${h.maxIL}_${h.maxXL}`];
-                    if (firstPt && lastPt) {
-                        posAttr.setXYZ(idx,
-                            (firstPt.x + fx * (lastPt.x - firstPt.x)) - centerX,
-                            -avgZ,
-                            -((firstPt.y + fy * (lastPt.y - firstPt.y)) - centerY)
-                        );
-                    } else {
-                        posAttr.setXYZ(idx, 0, -avgZ, 0);
+                if (filled[idx]) continue;
+                // scan for closest filled vertex
+                for (let r = 1; r < Math.max(width, height); r++) {
+                    let found = false;
+                    for (let dx = -r; dx <= r && !found; dx++) {
+                        for (let dy = -r; dy <= r && !found; dy++) {
+                            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+                            const nx = ix + dx, ny = iy + dy;
+                            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                            const ni = ny * width + nx;
+                            if (!filled[ni]) continue;
+                            posAttr.setXYZ(idx, posAttr.getX(ni), posAttr.getY(ni), posAttr.getZ(ni));
+                            filled[idx] = 1;
+                            found = true;
+                        }
                     }
+                    if (found) break;
                 }
             }
         }
