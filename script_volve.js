@@ -752,6 +752,41 @@ for (const wb of WELL_DEFS) {
     wellStations.set(wb.name, minimumCurvature(wb.turnPoints));
 }
 
+// Snap Lat 3/4 lateral sections to match Lat 1/2 target positions exactly.
+// The minimum curvature algorithm computes cumulative positions from md/inc/azi,
+// so different build sections produce different endpoint positions even with
+// identical final turn point coordinates.
+function snapLateralToReference(lateralName, refName, targetTPLabel) {
+    const stns = wellStations.get(lateralName);
+    const refStns = wellStations.get(refName);
+    if (!stns || !refStns) return;
+
+    // Find turn point index for the target in each trajectory
+    const srcDef = WELL_DEFS.find(w => w.name === lateralName);
+    const refDef = WELL_DEFS.find(w => w.name === refName);
+    const srcTPIdx = srcDef.turnPoints.findIndex(tp => tp.target === targetTPLabel);
+    const refTPIdx = refDef.turnPoints.findIndex(tp => tp.target === targetTPLabel);
+    if (srcTPIdx < 0 || refTPIdx < 0) return;
+
+    const srcStIdx = srcTPIdx * WELL_INTERP_STEPS;
+    const refStIdx = refTPIdx * WELL_INTERP_STEPS;
+    if (srcStIdx >= stns.length || refStIdx >= refStns.length) return;
+
+    // Compute delta between reference and source at the target station
+    const dN = refStns[refStIdx].northing - stns[srcStIdx].northing;
+    const dE = refStns[refStIdx].easting  - stns[srcStIdx].easting;
+    const dT = refStns[refStIdx].tvd      - stns[srcStIdx].tvd;
+
+    // Shift all stations from target onward
+    for (let i = srcStIdx; i < stns.length; i++) {
+        stns[i].northing += dN;
+        stns[i].easting  += dE;
+        stns[i].tvd      += dT;
+    }
+}
+snapLateralToReference('Lateral 3', 'Lateral 1', 'LP1');
+snapLateralToReference('Lateral 4', 'Lateral 2', 'LP2');
+
 // ── Build Well Trajectories ────────────────────────────────────
 function buildWellTrajectories() {
     // Clear existing
