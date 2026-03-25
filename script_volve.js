@@ -790,7 +790,7 @@ function buildWellTrajectories() {
             if (pts.length < 2) continue;
 
             // Rotate Lateral 2 around its KOP junction
-            if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+            if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
                 const pivot = pts[0].clone(); // KOP is the first point (for first segment) or rotate all
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
@@ -837,7 +837,7 @@ function buildWellTrajectories() {
             const tpPos = wellToWorld(s.northing, s.easting, s.tvd);
 
             // Rotate Lateral 2 turn point markers around KOP
-            if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+            if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -862,7 +862,7 @@ function buildWellTrajectories() {
         const td = stations[stations.length - 1];
         const tdPos = wellToWorld(td.northing, td.easting, td.tvd);
         // Rotate Lateral 2 TD around KOP
-        if (wb.name === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+        if ((wb.name === 'Lateral 2' || wb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
             const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
             const angle = -params.lat2RotationDeg * Math.PI / 180;
             const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -2644,7 +2644,7 @@ wellTrajFolder.add(params, 'showLateral1').name('Lateral 1').onChange(() => buil
 wellTrajFolder.addColor(params, 'lat1Color').name('Lat 1 Color').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'showLateral2').name('Lateral 2').onChange(() => buildWellTrajectories());
 wellTrajFolder.addColor(params, 'lat2Color').name('Lat 2 Color').onChange(() => buildWellTrajectories());
-wellTrajFolder.add(params, 'lat2RotationDeg', -180, 180, 1).name('Lat 2 Rotation (°)').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'lat2RotationDeg', -180, 180, 1).name('Lat 2/4 Rotation (°)').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'showLateral3').name('Lateral 3').onChange(() => buildWellTrajectories());
 wellTrajFolder.addColor(params, 'lat3Color').name('Lat 3 Color').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'showLateral4').name('Lateral 4').onChange(() => buildWellTrajectories());
