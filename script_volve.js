@@ -674,9 +674,6 @@ const WELL_TARGETS = [
     { name: 'LP1',  wellbore: 'Lateral 1', tpIndexParam: 'lat1LP1Position' },
     { name: 'BHL',  wellbore: 'Lateral 1', tpIndex: 5 },
     { name: 'LP2',  wellbore: 'Lateral 2', tpIndex: 4 },
-    { name: 'LP1',  wellbore: 'Lateral 3', tpIndexParam: 'lat1LP1Position' },
-    { name: 'BHL',  wellbore: 'Lateral 3', tpIndex: 3 },
-    { name: 'LP2',  wellbore: 'Lateral 4', tpIndex: 1 },
 ];
 
 const WELL_DEFS = [
