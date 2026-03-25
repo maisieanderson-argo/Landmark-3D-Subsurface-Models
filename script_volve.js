@@ -752,40 +752,51 @@ for (const wb of WELL_DEFS) {
     wellStations.set(wb.name, minimumCurvature(wb.turnPoints));
 }
 
-// Snap Lat 3/4 lateral sections to match Lat 1/2 target positions exactly.
-// The minimum curvature algorithm computes cumulative positions from md/inc/azi,
-// so different build sections produce different endpoint positions even with
-// identical final turn point coordinates.
-function snapLateralToReference(lateralName, refName, targetTPLabel) {
+// Smoothly correct Lat 3/4 build sections to meet Lat 1/2 target positions.
+// Instead of a hard snap (which creates a kink), we linearly ramp the
+// positional correction from KOP (0%) to the target turn point (100%),
+// then apply 100% for the entire lateral section.
+function blendLateralToReference(lateralName, refName, targetTPLabel) {
     const stns = wellStations.get(lateralName);
     const refStns = wellStations.get(refName);
     if (!stns || !refStns) return;
 
-    // Find turn point index for the target in each trajectory
     const srcDef = WELL_DEFS.find(w => w.name === lateralName);
     const refDef = WELL_DEFS.find(w => w.name === refName);
     const srcTPIdx = srcDef.turnPoints.findIndex(tp => tp.target === targetTPLabel);
     const refTPIdx = refDef.turnPoints.findIndex(tp => tp.target === targetTPLabel);
     if (srcTPIdx < 0 || refTPIdx < 0) return;
 
-    const srcStIdx = srcTPIdx * WELL_INTERP_STEPS;
-    const refStIdx = refTPIdx * WELL_INTERP_STEPS;
-    if (srcStIdx >= stns.length || refStIdx >= refStns.length) return;
+    const tgtStIdx = Math.min(srcTPIdx * WELL_INTERP_STEPS, stns.length - 1);
+    const refStIdx = Math.min(refTPIdx * WELL_INTERP_STEPS, refStns.length - 1);
 
-    // Compute delta between reference and source at the target station
-    const dN = refStns[refStIdx].northing - stns[srcStIdx].northing;
-    const dE = refStns[refStIdx].easting  - stns[srcStIdx].easting;
-    const dT = refStns[refStIdx].tvd      - stns[srcStIdx].tvd;
+    // Compute the delta at the target station
+    const dN = refStns[refStIdx].northing - stns[tgtStIdx].northing;
+    const dE = refStns[refStIdx].easting  - stns[tgtStIdx].easting;
+    const dT = refStns[refStIdx].tvd      - stns[tgtStIdx].tvd;
 
-    // Shift all stations from target onward
-    for (let i = srcStIdx; i < stns.length; i++) {
-        stns[i].northing += dN;
-        stns[i].easting  += dE;
-        stns[i].tvd      += dT;
+    // Find KOP station (start of build — first station after vertical)
+    // For Lat 3, KOP is turn point 1 (end of straight section); for Lat 4, it's turn point 0
+    const kopTPIdx = srcDef.turnPoints.findIndex(tp =>
+        tp.sectionType === 'Straight MD' || tp.sectionType === 'KOP Junction');
+    const kopStIdx = Math.max(0, kopTPIdx * WELL_INTERP_STEPS);
+
+    // Blend: 0% at KOP, 100% at target, 100% beyond
+    for (let i = kopStIdx; i < stns.length; i++) {
+        let t;
+        if (i >= tgtStIdx) {
+            t = 1.0; // full correction from target onward
+        } else {
+            t = (i - kopStIdx) / (tgtStIdx - kopStIdx); // linear ramp
+            t = t * t * (3 - 2 * t); // smoothstep for even smoother curve
+        }
+        stns[i].northing += dN * t;
+        stns[i].easting  += dE * t;
+        stns[i].tvd      += dT * t;
     }
 }
-snapLateralToReference('Lateral 3', 'Lateral 1', 'LP1');
-snapLateralToReference('Lateral 4', 'Lateral 2', 'LP2');
+blendLateralToReference('Lateral 3', 'Lateral 1', 'LP1');
+blendLateralToReference('Lateral 4', 'Lateral 2', 'LP2');
 
 // ── Build Well Trajectories ────────────────────────────────────
 function buildWellTrajectories() {
