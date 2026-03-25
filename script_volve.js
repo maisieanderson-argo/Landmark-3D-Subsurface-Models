@@ -901,8 +901,8 @@ function buildWellTrajectories() {
             wellGroup.add(head);
         }
 
-        // Turn point markers — skip in dots mode
-        if (params.wellPathStyle !== 'dots') {
+        // Turn point markers
+        {
         for (let tpIdx = 0; tpIdx < wb.turnPoints.length; tpIdx++) {
             const stationIdx = Math.min(tpIdx * WELL_INTERP_STEPS, stations.length - 1);
             const s = stations[stationIdx];
@@ -2075,7 +2075,7 @@ function recomputeFitBlend() {
     const fitDistArr      = new Float32Array(N);
     for (let i = 0; i < N; i++) { fitConformDepth[i] = -yPriorSmooth[i]; fitDistArr[i] = Infinity; }
 
-    // Helper: gather transformed raw vertices from a base mesh
+    // Helper: gather ALL transformed vertices from a base mesh (includes interpolated/gap-filled)
     function gatherBaseVerts(layerName, surveyGroup) {
         const mesh = surveyGroup.children.find(m =>
             m.userData.isHorizon && m.userData.layerName === layerName && !m.userData.isContour);
@@ -2083,18 +2083,15 @@ function recomputeFitBlend() {
         surveyGroup.updateMatrix();
         const mat4 = surveyGroup.matrix;
         const rawPos = mesh.userData.rawHorizonPos;
-        const hIdx = mesh.geometry.index;
-        const hPosCount = rawPos.length / 3;
-        const usedVerts = new Set();
-        if (hIdx) { const arr = hIdx.array; for (let i = 0; i < arr.length; i++) usedVerts.add(arr[i]); }
+        const vertCount = rawPos.length / 3;
         const verts = [];
         const _v = new THREE.Vector3();
-        for (let i = 0; i < hPosCount; i++) {
-            if (!usedVerts.has(i)) continue;
+        for (let i = 0; i < vertCount; i++) {
             _v.set(rawPos[i*3], rawPos[i*3+1], rawPos[i*3+2]);
             _v.applyMatrix4(mat4);
             verts.push({ x: _v.x, y: _v.y, z: _v.z });
         }
+        console.log(`gatherBaseVerts(${layerName}): ${vertCount} vertices gathered (all incl. interpolated)`);
         return verts;
     }
 
