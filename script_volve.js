@@ -684,10 +684,10 @@ const WELL_TARGETS = [
 ];
 
 const WELL_DEFS = [
-    { name: 'Lateral 1', turnPoints: LATERAL1_TURN_POINTS, colorParam: 'lat1Color', visParam: 'showLateral1' },
-    { name: 'Lateral 2', turnPoints: LATERAL2_TURN_POINTS, colorParam: 'lat2Color', visParam: 'showLateral2' },
-    { name: 'Lateral 3', turnPoints: LATERAL3_TURN_POINTS, colorParam: 'lat3Color', visParam: 'showLateral3' },
-    { name: 'Lateral 4', turnPoints: LATERAL4_TURN_POINTS, colorParam: 'lat4Color', visParam: 'showLateral4' },
+    { name: 'Lateral 1', turnPoints: LATERAL1_TURN_POINTS, colorParam: 'lat1Color', visParam: 'showLateral1', targetVisParam: 'showLat1Targets' },
+    { name: 'Lateral 2', turnPoints: LATERAL2_TURN_POINTS, colorParam: 'lat2Color', visParam: 'showLateral2', targetVisParam: 'showLat2Targets' },
+    { name: 'Lateral 3', turnPoints: LATERAL3_TURN_POINTS, colorParam: 'lat3Color', visParam: 'showLateral3', targetVisParam: 'showLat3Targets' },
+    { name: 'Lateral 4', turnPoints: LATERAL4_TURN_POINTS, colorParam: 'lat4Color', visParam: 'showLateral4', targetVisParam: 'showLat4Targets' },
 ];
 
 // ── Minimum Curvature Interpolation ────────────────────────────
@@ -889,6 +889,8 @@ function buildWellTrajectories() {
         for (const tgt of WELL_TARGETS) {
             const wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
             if (!wb) continue;
+            // Per-lateral target visibility
+            if (wb.targetVisParam && !params[wb.targetVisParam]) continue;
             // Need stations even if the well tube is hidden — compute if missing
             if (!wellStations.has(wb.name)) {
                 const stns = minimumCurvature(wb.turnPoints, WELL_INTERP_STEPS);
@@ -901,8 +903,8 @@ function buildWellTrajectories() {
             const s = stns[stIdx];
             const pos = wellToWorld(s.northing, s.easting, s.tvd);
 
-            // Rotate Lateral 2 targets around KOP
-            if (tgt.wellbore === 'Lateral 2' && params.lat2RotationDeg !== 0) {
+            // Rotate Lateral 2/4 targets around KOP
+            if ((tgt.wellbore === 'Lateral 2' || tgt.wellbore === 'Lateral 4') && params.lat2RotationDeg !== 0) {
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -1249,6 +1251,10 @@ const _paramsDefaults = {
     lat4Color: '#d8b774',
     wellTubeRadius: 8,                 // metres (scene units)
     wellShowTargets: true,
+    showLat1Targets: true,
+    showLat2Targets: true,
+    showLat3Targets: true,
+    showLat4Targets: true,
     wellTargetColor: '#3ad994',
     wellTargetSize: 50,                // metres (scene units)
     wellTargetOpacity: 0.25,
@@ -2652,7 +2658,11 @@ wellTrajFolder.addColor(params, 'lat4Color').name('Lat 4 Color').onChange(() => 
 wellTrajFolder.add(params, 'wellTubeRadius', 1, 30, 1).name('Tube Radius (m)').onChange(() => buildWellTrajectories());
 
 const wellTargetFolder = wellFolder.addFolder('Targets');
-wellTargetFolder.add(params, 'wellShowTargets').name('Show Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'wellShowTargets').name('Show All Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'showLat1Targets').name('Lat 1 Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'showLat2Targets').name('Lat 2 Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'showLat3Targets').name('Lat 3 Targets').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'showLat4Targets').name('Lat 4 Targets').onChange(() => buildWellTrajectories());
 wellTargetFolder.addColor(params, 'wellTargetColor').name('Color').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'wellTargetSize', 10, 200, 5).name('Size (m)').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity').onChange(() => buildWellTrajectories());
