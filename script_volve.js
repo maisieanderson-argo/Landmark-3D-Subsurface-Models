@@ -460,7 +460,7 @@ async function initVolveData() {
 
         const geometry = new THREE.PlaneGeometry(1, 1, width - 1, height - 1);
         const posAttr = geometry.attributes.position;
-        const invalidIndices = new Set();
+        const filled = new Uint8Array(width * height); // 1 = has data
 
         let validPoints = 0;
         for (let ix = 0; ix < width; ix++) {
@@ -468,43 +468,64 @@ async function initVolveData() {
                 const il = h.minIL + ix * VOLVE_DECIMATE;
                 const xl = h.minXL + iy * VOLVE_DECIMATE;
                 const pt = h.data[`${il}_${xl}`];
-
                 const idx = iy * width + ix;
-
                 if (pt) {
-                    posAttr.setXYZ(idx,
-                        pt.x - centerX,
-                        -pt.z,
-                        -(pt.y - centerY)
-                    );
+                    posAttr.setXYZ(idx, pt.x - centerX, -pt.z, -(pt.y - centerY));
+                    filled[idx] = 1;
                     validPoints++;
-                } else {
-                    // Mark as invalid
-                    invalidIndices.add(idx);
-                    // Set to 0 (won't be rendered anyway after index cleanup)
-                    posAttr.setXYZ(idx, 0, 0, 0);
                 }
             }
         }
-        console.log(`Mesh built with ${validPoints} valid vertices out of ${width * height} total grid points`);
 
-        // CLEANUP INDICES: Remove triangles connected to invalid vertices
-        const indexAttr = geometry.index;
-        const indices = indexAttr.array;
-        const newIndices = [];
-
-        for (let i = 0; i < indices.length; i += 3) {
-            const a = indices[i];
-            const b = indices[i + 1];
-            const c = indices[i + 2];
-
-            // If any vertex of the triangle is invalid, skip this triangle
-            if (!invalidIndices.has(a) && !invalidIndices.has(b) && !invalidIndices.has(c)) {
-                newIndices.push(a, b, c);
+        // Fill missing vertices from neighbours so the sheet is rectangular
+        // Two passes to propagate from edges inward
+        for (let pass = 0; pass < 2; pass++) {
+            for (let ix = 0; ix < width; ix++) {
+                for (let iy = 0; iy < height; iy++) {
+                    const idx = iy * width + ix;
+                    if (filled[idx]) continue;
+                    let sx = 0, sy = 0, sz = 0, cnt = 0;
+                    // 4-connected neighbours
+                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                        const nx = ix + dx, ny = iy + dy;
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        const ni = ny * width + nx;
+                        if (!filled[ni]) continue;
+                        sx += posAttr.getX(ni);
+                        sy += posAttr.getY(ni);
+                        sz += posAttr.getZ(ni);
+                        cnt++;
+                    }
+                    if (cnt > 0) {
+                        posAttr.setXYZ(idx, sx / cnt, sy / cnt, sz / cnt);
+                        filled[idx] = 1;
+                    }
+                }
             }
         }
-
-        geometry.setIndex(newIndices);
+        // Any remaining holes get the layer average depth at interpolated XY
+        for (let ix = 0; ix < width; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const idx = iy * width + ix;
+                if (!filled[idx]) {
+                    // Estimate XY from grid position using the grid's spatial extent
+                    const fx = ix / (width - 1), fy = iy / (height - 1);
+                    // Find bounding XY from first and last valid points
+                    const firstPt = h.data[`${h.minIL}_${h.minXL}`];
+                    const lastPt  = h.data[`${h.maxIL}_${h.maxXL}`];
+                    if (firstPt && lastPt) {
+                        posAttr.setXYZ(idx,
+                            (firstPt.x + fx * (lastPt.x - firstPt.x)) - centerX,
+                            -avgZ,
+                            -((firstPt.y + fy * (lastPt.y - firstPt.y)) - centerY)
+                        );
+                    } else {
+                        posAttr.setXYZ(idx, 0, -avgZ, 0);
+                    }
+                }
+            }
+        }
+        console.log(`Mesh built with ${validPoints} valid + ${width * height - validPoints} filled vertices`);
 
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
