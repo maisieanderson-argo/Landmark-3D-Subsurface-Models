@@ -19,7 +19,7 @@ camera.add(headLight);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // cap at 1.5 for perf on Retina
 renderer.shadowMap.enabled = false;
 container.appendChild(renderer.domElement);
 
@@ -505,12 +505,11 @@ async function initVolveData() {
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
 
-        const material = new THREE.MeshStandardMaterial({
+        const material = new THREE.MeshPhongMaterial({
             color: h.color,
             side: THREE.DoubleSide,
             wireframe: false,
-            roughness: 0.6,
-            metalness: 0.2,
+            shininess: 40,
             depthWrite: true  // ensures horizon depth is written so regional contour is occluded
         });
 
@@ -779,7 +778,7 @@ function buildWellTrajectories() {
     // Target orbs — rendered independently of well tube visibility
     if (params.wellShowTargets) {
         const tColor = new THREE.Color(params.wellTargetColor);
-        const ringTubeRadius = Math.max(1, params.wellTargetSize * 0.04); // thin ring tube
+        const ringTubeRadius = Math.max(0.5, params.wellTargetSize * 0.02); // thin ring tube
         for (const tgt of WELL_TARGETS) {
             const wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
             if (!wb) continue;
@@ -805,7 +804,7 @@ function buildWellTrajectories() {
                 pos.z = kopWorld.z + dx * sinA + dz * cosA;
             }
 
-            const orbGeo = new THREE.SphereGeometry(params.wellTargetSize, 32, 32);
+            const orbGeo = new THREE.SphereGeometry(params.wellTargetSize, 16, 16);
             const orbMat = new THREE.MeshPhongMaterial({
                 color: tColor,
                 emissive: tColor.clone().multiplyScalar(0.15),
@@ -2041,8 +2040,8 @@ async function loadRegionalHorizon() {
     });
 
     // ── Bilinear upsample SRC → render grid ─────────────────────────────────
-    // Target ~400 cells on the longest axis, scaling proportionally.
-    const UPSAMPLE_TARGET = 401;
+    // Target ~200 cells on the longest axis, scaling proportionally.
+    const UPSAMPLE_TARGET = 201;
     const upsampleFactor = Math.max(1, Math.round(UPSAMPLE_TARGET / Math.max(SRC_W, SRC_H)));
     const W = (SRC_W - 1) * upsampleFactor + 1;
     const H = (SRC_H - 1) * upsampleFactor + 1;
@@ -2092,10 +2091,10 @@ async function loadRegionalHorizon() {
     pos.needsUpdate = true;
     geo.computeVertexNormals();
 
-    const mat = new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshPhongMaterial({
         color: 0x7799BB, transparent: true, opacity: params.regionalOpacity,
         depthWrite: false, side: THREE.DoubleSide,
-        roughness: 0.85, metalness: 0.05, wireframe: params.regionalWireframe
+        shininess: 20, wireframe: params.regionalWireframe
     });
 
     regionalMesh = new THREE.Mesh(geo, mat);
@@ -2778,11 +2777,10 @@ async function initNorneData() {
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
 
-        const material = new THREE.MeshStandardMaterial({
+        const material = new THREE.MeshPhongMaterial({
             color: h.color,
             side: THREE.DoubleSide,
-            roughness: 0.6,
-            metalness: 0.2,
+            shininess: 40,
             depthWrite: true  // horizon writes depth buffer to occlude regional contour layer
         });
         const mesh = new THREE.Mesh(geometry, material);
