@@ -82,9 +82,6 @@ modelGroup.add(volveSurveyGroup);
 const wellGroup = new THREE.Group();
 modelGroup.add(wellGroup);
 
-// Surface grid (datum reference plane at y=0)
-let surfaceGridMesh = null;
-
 // Helper: iterate meshes from BOTH survey groups (for survey-spanning operations)
 function allSurveyChildren() {
     return [...norneSurveyGroup.children, ...volveSurveyGroup.children];
@@ -882,36 +879,19 @@ function buildWellTrajectories() {
         }
     }
 
-}
-
-// ── Surface grid — datum reference plane at y=0 ──────────────────────────
-function buildSurfaceGrid() {
-    // Remove existing grid
-    if (surfaceGridMesh) { modelGroup.remove(surfaceGridMesh); surfaceGridMesh = null; }
-    if (!params.showSurfaceGrid) return;
-
-    // Size the grid to match the regional surface extent, or use manual size
-    let gridSize = params.surfaceGridSize;
-    if (regionalMesh && regionalMesh.geometry.boundingBox) {
-        const bb = regionalMesh.geometry.boundingBox;
-        gridSize = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) * 1.05;
+    // ── Surface grid (represents ground level at wellhead) ────────────────
+    if (params.showSurfaceGrid) {
+        const gridSize = params.surfaceGridSize;
+        const gridDiv  = params.surfaceGridDivisions;
+        const gridColor = new THREE.Color(params.surfaceGridColor);
+        const grid = new THREE.GridHelper(gridSize, gridDiv, gridColor, gridColor);
+        grid.material.transparent = true;
+        grid.material.opacity = 0.4;
+        grid.material.depthWrite = false;
+        grid.position.y = 0; // surface level
+        grid.userData = { isWell: true, isSurfaceGrid: true };
+        wellGroup.add(grid);
     }
-    const gridDiv  = params.surfaceGridDivisions;
-    const gridColor = new THREE.Color(params.surfaceGridColor);
-    const grid = new THREE.GridHelper(gridSize, gridDiv, gridColor, gridColor);
-    grid.material.transparent = true;
-    grid.material.opacity = 0.35;
-    grid.material.depthWrite = false;
-    grid.position.y = 0; // sea level datum
-    // Center the grid on the regional mesh center if available
-    if (regionalMesh && regionalMesh.geometry.boundingBox) {
-        const bb = regionalMesh.geometry.boundingBox;
-        grid.position.x = (bb.max.x + bb.min.x) / 2;
-        grid.position.z = (bb.max.z + bb.min.z) / 2;
-    }
-    grid.userData = { isSurfaceGrid: true };
-    surfaceGridMesh = grid;
-    modelGroup.add(grid);
 }
 
 // Add Custom UI Styles and HTML
@@ -2216,7 +2196,6 @@ async function loadRegionalHorizon() {
 
     if (camera) { camera.far = Math.max(camera.far, 200000); camera.updateProjectionMatrix(); }
     console.log('Norne Base regional horizon loaded');
-    buildSurfaceGrid(); // Build datum grid now that regional bounding box is available
 
     // Apply the fit blend according to the persisted toggle state
     applyRegionalBlend(params.regionalBlendKm);
@@ -2613,10 +2592,10 @@ wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity
 wellTargetFolder.add(params, 'lat1LP1Position', 0, 5, 0.1).name('LP1 Position').onChange(() => buildWellTrajectories());
 
 const wellGridFolder = wellFolder.addFolder('Surface Grid');
-wellGridFolder.add(params, 'showSurfaceGrid').name('Show Grid').onChange(() => buildSurfaceGrid());
-wellGridFolder.add(params, 'surfaceGridSize', 500, 10000, 100).name('Size (m)').onChange(() => buildSurfaceGrid());
-wellGridFolder.add(params, 'surfaceGridDivisions', 4, 40, 1).name('Divisions').onChange(() => buildSurfaceGrid());
-wellGridFolder.addColor(params, 'surfaceGridColor').name('Color').onChange(() => buildSurfaceGrid());
+wellGridFolder.add(params, 'showSurfaceGrid').name('Show Grid').onChange(() => buildWellTrajectories());
+wellGridFolder.add(params, 'surfaceGridSize', 500, 10000, 100).name('Size (m)').onChange(() => buildWellTrajectories());
+wellGridFolder.add(params, 'surfaceGridDivisions', 4, 40, 1).name('Divisions').onChange(() => buildWellTrajectories());
+wellGridFolder.addColor(params, 'surfaceGridColor').name('Color').onChange(() => buildWellTrajectories());
 
 // Build wells on first load
 buildWellTrajectories();
