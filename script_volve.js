@@ -1887,7 +1887,10 @@ function applyState(state) {
 
     // Model Transform
     allSurveyChildren().forEach(c => {
-        if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = params.wireframe;
+        if (!c.userData.isContour && !c.userData.isRegionalContour) {
+            c.material.wireframe = params.wireframe;
+            c.material.depthWrite = !params.wireframe;
+        }
     });
     allSurveyChildren().forEach(c => {
         if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.flatShading = params.flatShading;
@@ -2556,7 +2559,10 @@ vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
     allSurveyChildren().forEach(c => {
-        if (!c.userData.isContour && !c.userData.isRegionalContour) c.material.wireframe = v;
+        if (!c.userData.isContour && !c.userData.isRegionalContour) {
+            c.material.wireframe = v;
+            c.material.depthWrite = !v;
+        }
     });
 });
 
@@ -2764,7 +2770,11 @@ regionalFolder.add(params, 'regionalFitBlendKm', 0.5, 15, 0.5).name('Fit Blend (
     if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
 });
 regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => {
-    if (regionalMesh) { regionalMesh.material.wireframe = v; regionalMesh.material.needsUpdate = true; }
+    if (regionalMesh) {
+        regionalMesh.material.wireframe = v;
+        regionalMesh.material.depthWrite = !v;
+        regionalMesh.material.needsUpdate = true;
+    }
 });
 
 const regionalTopoFolder = regionalFolder.addFolder('Topology Lines');
