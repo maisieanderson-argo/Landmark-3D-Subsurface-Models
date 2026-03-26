@@ -993,7 +993,7 @@ function buildWellTrajectories() {
                 emissive: tColor.clone().multiplyScalar(0.15),
                 transparent: true,
                 opacity: params.wellTargetOpacity,
-                depthWrite: false,
+                depthWrite: true,
                 side: THREE.DoubleSide,
                 shininess: 80,
             });
@@ -1011,7 +1011,7 @@ function buildWellTrajectories() {
                 emissive: tColor.clone().multiplyScalar(0.15),
                 transparent: true,
                 opacity: Math.min(1, params.wellTargetOpacity * 1.5),
-                depthWrite: false,
+                depthWrite: true,
                 side: THREE.DoubleSide,
             });
             const hRing = new THREE.Mesh(hRingGeo, ringMat);
