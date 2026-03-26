@@ -1701,7 +1701,6 @@ function initLayerControls(layers) {
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name) {
                     c.material.transparent = true; c.material.opacity = v;
-                    c.material.depthWrite = v >= 1;
                     c.material.needsUpdate = true;
                 }
             });
@@ -1757,7 +1756,7 @@ function initLayerControls(layers) {
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === f.name) {
                     c.visible = layerState[f.name].visible;
-                    if (c.material) { c.material.transparent = true; c.material.opacity = 0.75; c.material.depthWrite = false; }
+                    if (c.material) { c.material.transparent = true; c.material.opacity = 0.75; }
                 }
             });
 
@@ -1842,7 +1841,6 @@ function applyState(state) {
                     // s.opacity may be undefined for fault layers — use existing value as fallback
                     if (s.opacity !== undefined) {
                         c.material.opacity = s.opacity;
-                        c.material.depthWrite = s.opacity >= 1;
                     }
                 }
             }
