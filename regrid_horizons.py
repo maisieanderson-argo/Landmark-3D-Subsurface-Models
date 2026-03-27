@@ -97,54 +97,70 @@ def regrid_horizon(input_file, output_file, spacing=GRID_SPACING):
     # Use linear where available, nearest for NaN edges
     z_grid = np.where(np.isnan(z_linear), z_nearest, z_linear)
 
-    # ── 5b. Edge-clamp: snap edge dots' Z to nearest interior dot ──
-    # Reshape inside mask to 2D grid (n_iy × n_ix)
+    # ── 5b. Two-pass edge clamping ──
+    from scipy.spatial import cKDTree
     inside_2d = inside.reshape(n_iy, n_ix)
     z_2d = z_grid.reshape(n_iy, n_ix)
 
-    # Identify edge cells: inside the hull but have ≥1 missing 8-neighbor
-    edge_mask = np.zeros_like(inside_2d, dtype=bool)
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            if dy == 0 and dx == 0:
-                continue
-            # Shift the inside mask and check for missing neighbors
-            shifted = np.zeros_like(inside_2d)
-            src_y = slice(max(0, -dy), n_iy + min(0, -dy))
-            src_x = slice(max(0, -dx), n_ix + min(0, -dx))
-            dst_y = slice(max(0, dy), n_iy + min(0, dy))
-            dst_x = slice(max(0, dx), n_ix + min(0, dx))
-            shifted[dst_y, dst_x] = inside_2d[src_y, src_x]
-            # Cell is edge if it's inside but this neighbor is outside
-            edge_mask |= (inside_2d & ~shifted)
+    # Pass 1: Snap NN-fallback cells to nearest linearly-interpolated cell
+    nn_fallback = np.isnan(z_linear) & inside
+    has_linear  = ~np.isnan(z_linear) & inside
+    n_fallback = nn_fallback.sum()
+    print(f'  Linear interp cells: {has_linear.sum()}, NN-fallback cells: {n_fallback}')
 
-    n_edge = edge_mask.sum()
-    n_interior = inside_2d.sum() - n_edge
-    print(f'  Edge cells: {n_edge}, Interior cells: {n_interior}')
+    if n_fallback > 0 and has_linear.sum() > 0:
+        has_linear_2d = has_linear.reshape(n_iy, n_ix)
+        nn_fallback_2d = nn_fallback.reshape(n_iy, n_ix)
+        lin_ys, lin_xs = np.where(has_linear_2d)
+        fb_ys, fb_xs = np.where(nn_fallback_2d)
+        tree = cKDTree(np.column_stack([lin_xs, lin_ys]))
+        _, nearest_idx = tree.query(np.column_stack([fb_xs, fb_ys]))
+        for i in range(len(fb_ys)):
+            z_2d[fb_ys[i], fb_xs[i]] = z_2d[lin_ys[nearest_idx[i]], lin_xs[nearest_idx[i]]]
+        print(f'  Pass 1: {n_fallback} NN-fallback cells clamped')
 
-    # For each edge cell, find the nearest interior cell and copy its Z
-    if n_edge > 0:
-        interior_mask = inside_2d & ~edge_mask
+    # Pass 2: Iteratively snap boundary rings to nearest interior cell.
+    # Each pass peels one ring from the edge and clamps it, going 3 rings deep.
+    EDGE_RINGS = 3
+    remaining_inside = inside_2d.copy()
+    total_edge_clamped = 0
+
+    for ring in range(EDGE_RINGS):
+        edge_mask = np.zeros_like(remaining_inside, dtype=bool)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                shifted = np.zeros_like(remaining_inside)
+                src_y = slice(max(0, -dy), n_iy + min(0, -dy))
+                src_x = slice(max(0, -dx), n_ix + min(0, -dx))
+                dst_y = slice(max(0, dy), n_iy + min(0, dy))
+                dst_x = slice(max(0, dx), n_ix + min(0, dx))
+                shifted[dst_y, dst_x] = remaining_inside[src_y, src_x]
+                edge_mask |= (remaining_inside & ~shifted)
+
+        n_edge = edge_mask.sum()
+        if n_edge == 0:
+            break
+
+        interior_mask = remaining_inside & ~edge_mask
+        if interior_mask.sum() == 0:
+            break
+
         interior_ys, interior_xs = np.where(interior_mask)
         edge_ys, edge_xs = np.where(edge_mask)
-
-        # Build KD-tree of interior cell grid coordinates for fast lookup
-        from scipy.spatial import cKDTree
-        interior_coords = np.column_stack([interior_xs, interior_ys])
-        tree = cKDTree(interior_coords)
-
-        edge_coords = np.column_stack([edge_xs, edge_ys])
-        _, nearest_idx = tree.query(edge_coords)
-
-        # Snap each edge cell's Z to its nearest interior cell's Z
+        tree = cKDTree(np.column_stack([interior_xs, interior_ys]))
+        _, nearest_idx = tree.query(np.column_stack([edge_xs, edge_ys]))
         for i in range(len(edge_ys)):
-            ey, ex = edge_ys[i], edge_xs[i]
-            iy, ix = interior_ys[nearest_idx[i]], interior_xs[nearest_idx[i]]
-            z_2d[ey, ex] = z_2d[iy, ix]
+            z_2d[edge_ys[i], edge_xs[i]] = z_2d[interior_ys[nearest_idx[i]], interior_xs[nearest_idx[i]]]
+        total_edge_clamped += n_edge
 
-        print(f'  Edge Z-clamped: {n_edge} edge cells snapped to nearest interior Z')
+        # Peel this ring off for the next iteration
+        remaining_inside = interior_mask
 
-    # Flatten back
+    if total_edge_clamped > 0:
+        print(f'  Pass 2: {total_edge_clamped} boundary cells clamped ({EDGE_RINGS} rings)')
+
     z_grid = z_2d.ravel()
 
     # ── 6. Write output CSV ──

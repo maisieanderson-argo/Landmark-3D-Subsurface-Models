@@ -116,7 +116,7 @@ semMapImg.onload = () => {
     semMapCtx.drawImage(semMapImg, 0, 0);
     console.log(`SEM map canvas ready: ${semMapCanvas.width}×${semMapCanvas.height}`);
     // Rebuild dots if already in SEM Map + dots mode
-    if (params.selectedColormap === 'SEM Map' && params.horizonDisplayMode === 'dots') {
+    if (params.selectedColormap === 'SEM Map' && params.showHorizonDots) {
         const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
         if (hasDots) rebuildHorizonDots();
     }
@@ -419,9 +419,9 @@ async function initVolveData() {
     updateLoading("Fetching Volve Field Data...");
 
     const horizons = await Promise.all([
-        loadHorizon("BCU (Base Cretaceous Unconformity)", "BCU.csv", 0x4ECDC4),
-        loadHorizon("Hugin Fm Top", "Hugin_Fm_Top.csv", 0xFF6B6B),
-        loadHorizon("Hugin Fm Base", "Hugin_Fm_Base.csv", 0x45B7D1)
+        loadHorizon("BCU (Base Cretaceous Unconformity)", "BCU_regrid.csv", 0x4ECDC4),
+        loadHorizon("Hugin Fm Top", "Hugin_Fm_Top_regrid.csv", 0xFF6B6B),
+        loadHorizon("Hugin Fm Base", "Hugin_Fm_Base_regrid.csv", 0x45B7D1)
     ]);
 
     const validHorizons = horizons.filter(h => h !== null);
@@ -454,160 +454,93 @@ async function initVolveData() {
     const centerY = sumY / count;
     console.log(`Center calculated: ${centerX}, ${centerY}`);
 
-    // 2. Build Meshes (decimated — skip every DECIMATE-th IL/XL for performance)
-    const VOLVE_DECIMATE = 2; // keep every 2nd IL/XL → 4× fewer vertices; set to 1 for full res
+    // 2. Build Meshes — regridded data has uniform XY grid + edge Z-clamping,
+    //    so no decimation or hole-filling needed. Use invalidIndices + spatial
+    //    triangle culling (same approach as Norne mesh builder).
     validHorizons.forEach(h => {
         console.log(`Building mesh for ${h.name}...`);
-        // Original grid dimensions
-        const fullWidth  = h.maxIL - h.minIL + 1;
-        const fullHeight = h.maxXL - h.minXL + 1;
-        // Decimated grid
-        const width  = Math.ceil(fullWidth  / VOLVE_DECIMATE);
-        const height = Math.ceil(fullHeight / VOLVE_DECIMATE);
 
-        console.log(`Grid size: ${fullWidth} x ${fullHeight} → decimated ${width} x ${height} (factor ${VOLVE_DECIMATE})`);
+        const width  = h.maxIL - h.minIL + 1;
+        const height = h.maxXL - h.minXL + 1;
+
+        console.log(`Grid size: ${width} x ${height} = ${width * height} cells`);
 
         if (width <= 0 || height <= 0 || !isFinite(width) || !isFinite(height)) {
             console.error(`Invalid grid dimensions for ${h.name}: ${width}x${height}`);
             return;
         }
 
-        // Calculate average Z for hole filling (better than NaN for bounding box safety)
-        let sumZ = 0;
-        let countZ = 0;
-        Object.values(h.data).forEach(pt => {
-            sumZ += pt.z;
-            countZ++;
-        });
-        const avgZ = countZ > 0 ? sumZ / countZ : 0;
-        console.log(`Average Depth for ${h.name}: ${avgZ}`);
-
         const geometry = new THREE.PlaneGeometry(1, 1, width - 1, height - 1);
         const posAttr = geometry.attributes.position;
-        const filled = new Uint8Array(width * height); // 1 = has data
+        const invalidIndices = new Set();
 
-        let validPoints = 0;
         for (let ix = 0; ix < width; ix++) {
             for (let iy = 0; iy < height; iy++) {
-                const il = h.minIL + ix * VOLVE_DECIMATE;
-                const xl = h.minXL + iy * VOLVE_DECIMATE;
+                const il = h.minIL + ix;
+                const xl = h.minXL + iy;
                 const pt = h.data[`${il}_${xl}`];
                 const idx = iy * width + ix;
                 if (pt) {
                     posAttr.setXYZ(idx, pt.x - centerX, -pt.z, -(pt.y - centerY));
-                    filled[idx] = 1;
-                    validPoints++;
+                } else {
+                    invalidIndices.add(idx);
+                    posAttr.setXYZ(idx, 0, 0, 0);
                 }
             }
         }
 
-        // ── Pre-compute XZ grid positions from spatial gradients ──────────────
-        // Compute average dX/dIL, dZ/dIL, dX/dXL, dZ/dXL from valid data
-        let dxDil = 0, dzDil = 0, dxDxl = 0, dzDxl = 0;
-        let cntIl = 0, cntXl = 0;
+        // Remove degenerate triangles (invalid vertices + spatially stretched edges)
+        const rawIndices = geometry.index.array;
+        let cleanIndices = [];
+        for (let i = 0; i < rawIndices.length; i += 3) {
+            const a = rawIndices[i], b = rawIndices[i + 1], c = rawIndices[i + 2];
+            if (!invalidIndices.has(a) && !invalidIndices.has(b) && !invalidIndices.has(c)) {
+                cleanIndices.push(a, b, c);
+            }
+        }
+
+        // Compute typical edge length from valid adjacent vertices
+        let edgeLenSum = 0, edgeLenCnt = 0;
         for (let ix = 0; ix < width - 1; ix++) {
             for (let iy = 0; iy < height; iy++) {
-                const i0 = iy * width + ix, i1 = iy * width + ix + 1;
-                if (filled[i0] && filled[i1]) {
-                    dxDil += posAttr.getX(i1) - posAttr.getX(i0);
-                    dzDil += posAttr.getZ(i1) - posAttr.getZ(i0);
-                    cntIl++;
+                const i0 = iy * width + ix, i1 = iy * width + (ix + 1);
+                if (!invalidIndices.has(i0) && !invalidIndices.has(i1)) {
+                    const dx = posAttr.getX(i1) - posAttr.getX(i0);
+                    const dz = posAttr.getZ(i1) - posAttr.getZ(i0);
+                    edgeLenSum += Math.sqrt(dx * dx + dz * dz);
+                    edgeLenCnt++;
+                    break;
                 }
             }
+            if (edgeLenCnt > 10) break;
         }
-        for (let ix = 0; ix < width; ix++) {
-            for (let iy = 0; iy < height - 1; iy++) {
-                const i0 = iy * width + ix, i1 = (iy + 1) * width + ix;
-                if (filled[i0] && filled[i1]) {
-                    dxDxl += posAttr.getX(i1) - posAttr.getX(i0);
-                    dzDxl += posAttr.getZ(i1) - posAttr.getZ(i0);
-                    cntXl++;
-                }
-            }
-        }
-        if (cntIl > 0) { dxDil /= cntIl; dzDil /= cntIl; }
-        if (cntXl > 0) { dxDxl /= cntXl; dzDxl /= cntXl; }
+        const avgEdge = edgeLenCnt > 0 ? edgeLenSum / edgeLenCnt : 50;
+        const maxEdgeLen = avgEdge * 3.0;
 
-        // Find a reference valid point to anchor the grid
-        let refIx = 0, refIy = 0, refX = 0, refZ = 0;
-        for (let ix = 0; ix < width && !refX; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const idx = iy * width + ix;
-                if (filled[idx]) { refIx = ix; refIy = iy; refX = posAttr.getX(idx); refZ = posAttr.getZ(idx); break; }
-            }
-        }
-
-        // Pre-fill XZ for ALL grid cells using the spatial gradient
-        const gridX = new Float32Array(width * height);
-        const gridZ = new Float32Array(width * height);
-        for (let ix = 0; ix < width; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const idx = iy * width + ix;
-                gridX[idx] = refX + (ix - refIx) * dxDil + (iy - refIy) * dxDxl;
-                gridZ[idx] = refZ + (ix - refIx) * dzDil + (iy - refIy) * dzDxl;
-            }
-        }
-
-        // Set XZ for all unfilled vertices; keep original XZ for valid data
-        for (let ix = 0; ix < width; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const idx = iy * width + ix;
-                if (!filled[idx]) {
-                    posAttr.setXYZ(idx, gridX[idx], 0, gridZ[idx]);
+        // Second pass: cull triangles with stretched edges
+        const finalIndices = [];
+        let culledCount = 0;
+        for (let i = 0; i < cleanIndices.length; i += 3) {
+            const a = cleanIndices[i], b = cleanIndices[i + 1], c = cleanIndices[i + 2];
+            let tooLong = false;
+            const pairs = [[a, b], [b, c], [c, a]];
+            for (const [p, q] of pairs) {
+                const dx = posAttr.getX(p) - posAttr.getX(q);
+                const dz = posAttr.getZ(p) - posAttr.getZ(q);
+                if (dx * dx + dz * dz > maxEdgeLen * maxEdgeLen) {
+                    tooLong = true;
+                    break;
                 }
             }
-        }
-
-        // Fill only Y (depth) from neighbours
-        const maxPasses = Math.max(width, height);
-        for (let pass = 0; pass < maxPasses; pass++) {
-            let anyFilled = false;
-            for (let ix = 0; ix < width; ix++) {
-                for (let iy = 0; iy < height; iy++) {
-                    const idx = iy * width + ix;
-                    if (filled[idx]) continue;
-                    let sy = 0, cnt = 0;
-                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
-                        const nx = ix + dx, ny = iy + dy;
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                        const ni = ny * width + nx;
-                        if (!filled[ni]) continue;
-                        sy += posAttr.getY(ni);
-                        cnt++;
-                    }
-                    if (cnt > 0) {
-                        posAttr.setY(idx, sy / cnt);
-                        filled[idx] = 1;
-                        anyFilled = true;
-                    }
-                }
-            }
-            if (!anyFilled) break;
-        }
-        // Safety: nearest-neighbor for any remaining
-        for (let ix = 0; ix < width; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const idx = iy * width + ix;
-                if (filled[idx]) continue;
-                for (let r = 1; r < Math.max(width, height); r++) {
-                    let found = false;
-                    for (let dx = -r; dx <= r && !found; dx++) {
-                        for (let dy = -r; dy <= r && !found; dy++) {
-                            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-                            const nx = ix + dx, ny = iy + dy;
-                            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                            const ni = ny * width + nx;
-                            if (!filled[ni]) continue;
-                            posAttr.setY(idx, posAttr.getY(ni));
-                            filled[idx] = 1;
-                            found = true;
-                        }
-                    }
-                    if (found) break;
-                }
+            if (!tooLong) {
+                finalIndices.push(a, b, c);
+            } else {
+                culledCount++;
             }
         }
-        console.log(`Mesh built with ${validPoints} valid + ${width * height - validPoints} filled vertices`);
+        if (culledCount > 0) console.log(`  Culled ${culledCount} stretched edge triangles for ${h.name}`);
+        geometry.setIndex(finalIndices);
+        console.log(`Mesh built: ${width * height - invalidIndices.size} valid, ${invalidIndices.size} invalid vertices`);
 
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
@@ -1363,7 +1296,7 @@ const _paramsDefaults = {
     surfaceGridWireframe: true,
 
     // ── Horizon Display Mode ─────────────────────────────────────────────────
-    horizonDisplayMode: 'dots',       // 'solid' (mesh) or 'dots' (point cloud)
+    showHorizonDots: true,            // show point cloud overlay (independent of solid mesh)
     horizonDotSize: 8,                 // dot radius in scene metres
     horizonDotSkip: 1,                 // render every Nth vertex (1 = all)
 };
@@ -1558,7 +1491,11 @@ function applyHorizonDepthExag(exag) {
         if (!(mesh instanceof THREE.Mesh)) return;
         const raw = mesh.userData.rawHorizonPos;
         let sumY = 0, count = 0;
-        for (let i = 1; i < raw.length; i += 3) { sumY += raw[i]; count++; }
+        for (let i = 0; i < raw.length; i += 3) {
+            // Skip invalid placeholder vertices at origin
+            if (raw[i] === 0 && raw[i + 1] === 0 && raw[i + 2] === 0) continue;
+            sumY += raw[i + 1]; count++;
+        }
         meshInfos.push({ mesh, meanY: count > 0 ? sumY / count : 0 });
     });
     if (meshInfos.length === 0) return;
@@ -1588,12 +1525,7 @@ function addHorizonPanelControls() {
     depthExagFolder.add(params, 'horizonDepthExag', 1.0, 5.0, 0.05)
         .name('Layer Spread (×)')
         .onChange(v => applyHorizonDepthExag(v));
-    depthExagFolder.add(params, 'norneBBoxVisible').name('Norne Footprint Box')
-        .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
-    depthExagFolder.add(params, 'volveBBoxVisible').name('Volve Footprint Box')
-        .onChange(v => { if (volveBBox) volveBBox.visible = v; });
-    depthExagFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
-        .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); if (volveBBox) volveBBox.material.color.set(v); });
+
     // Seismic crossline panel controls
     depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
         .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
@@ -1613,7 +1545,12 @@ function applyHorizonPositions() {
 
         for (let i = 0; i < pos.count; i++) {
             const rx = raw[i * 3], ry = raw[i * 3 + 1], rz = raw[i * 3 + 2];
-            pos.setXYZ(i, rx, ry + exagShift, rz);
+            // Keep invalid placeholder vertices at origin (don't shift them)
+            if (rx === 0 && ry === 0 && rz === 0) {
+                pos.setXYZ(i, 0, 0, 0);
+            } else {
+                pos.setXYZ(i, rx, ry + exagShift, rz);
+            }
         }
         pos.needsUpdate = true;
         mesh.geometry.computeVertexNormals();
@@ -1725,8 +1662,10 @@ function initLayerControls(layers) {
                     c.visible = _ls.visible && params.showContours;
                 } else {
                     c.visible = _ls.visible;
-                    c.material.transparent = true;
-                    c.material.opacity = _ls.opacity;
+                    if (!c.userData.isHorizonDots) {
+                        c.material.transparent = true;
+                        c.material.opacity = _ls.opacity;
+                    }
                 }
             }
         });
@@ -1735,8 +1674,8 @@ function initLayerControls(layers) {
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name) {
                     if (c.userData.isContour) { c.userData.layerVisible = v; c.visible = v && params.showContours; }
-                    else if (c.userData.isHorizonDots) { c.visible = v && params.horizonDisplayMode === 'dots'; }
-                    else if (c.userData.isHorizon) { c.visible = v && params.horizonDisplayMode === 'solid'; }
+                    else if (c.userData.isHorizonDots) { c.visible = v && params.showHorizonDots; }
+                    else if (c.userData.isHorizon) { c.visible = v; }
                     else { c.visible = v; }
                 }
             });
@@ -1745,7 +1684,7 @@ function initLayerControls(layers) {
 
         folder.add(layerState[h.name], 'opacity', 0, 1).onChange(v => {
             allSurveyChildren().forEach(c => {
-                if (c.userData.layerName === h.name) {
+                if (c.userData.layerName === h.name && !c.userData.isHorizonDots) {
                     c.material.transparent = true; c.material.opacity = v;
                     c.material.needsUpdate = true;
                 }
@@ -1882,11 +1821,13 @@ function applyState(state) {
                     c.userData.layerVisible = s.visible;
                     c.visible = s.visible && params.showContours;
                 } else if (c.userData.isHorizonDots) {
-                    c.visible = s.visible && params.horizonDisplayMode === 'dots';
+                    c.visible = s.visible && params.showHorizonDots;
                 } else if (c.userData.isHorizon) {
-                    c.visible = s.visible && params.horizonDisplayMode === 'solid';
-                    c.material.transparent = true;
-                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
+                    c.visible = s.visible;
+                    if (!c.userData.isHorizonDots) {
+                        c.material.transparent = true;
+                        if (s.opacity !== undefined) c.material.opacity = s.opacity;
+                    }
                 } else {
                     c.visible = s.visible;
                     c.material.transparent = true;
@@ -2147,11 +2088,14 @@ function recomputeFitBlend() {
         const verts = [];
         const _v = new THREE.Vector3();
         for (let i = 0; i < vertCount; i++) {
-            _v.set(rawPos[i*3], rawPos[i*3+1], rawPos[i*3+2]);
+            const rx = rawPos[i*3], ry = rawPos[i*3+1], rz = rawPos[i*3+2];
+            // Skip invalid placeholder vertices (0,0,0) from unfilled grid cells
+            if (rx === 0 && ry === 0 && rz === 0) continue;
+            _v.set(rx, ry, rz);
             _v.applyMatrix4(mat4);
             verts.push({ x: _v.x, y: _v.y, z: _v.z });
         }
-        console.log(`gatherBaseVerts(${layerName}): ${vertCount} vertices gathered (all incl. interpolated)`);
+        console.log(`gatherBaseVerts(${layerName}): ${verts.length} valid / ${vertCount} total vertices`);
         return verts;
     }
 
@@ -2707,8 +2651,8 @@ function updateColoring() {
     // Always (re-)apply fault palette — faults are never depth-coloured
     applyFaultColoring();
 
-    // Refresh dots if in dots mode so they pick up the new colors
-    if (params.horizonDisplayMode === 'dots') {
+    // Refresh dots if visible so they pick up the new colors
+    if (params.showHorizonDots) {
         const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
         if (hasDots) rebuildHorizonDots();
     }
@@ -2740,16 +2684,42 @@ function rebuildHorizonDots() {
         const vertCount = posArr.length / 3;
 
         // Collect dot positions — one dot per mesh vertex (skip every Nth)
-        const positions = [];
-        const vertexIndices = [];
+        let rawPositions = [];
+        let rawIndices = [];
 
         for (let i = 0; i < vertCount; i += skip) {
             const x = posArr[i * 3], y = posArr[i * 3 + 1], z = posArr[i * 3 + 2];
             // Skip degenerate/gap-filled vertices at origin
             if (x === 0 && y === 0 && z === 0) continue;
-            positions.push(x, y, z);
-            vertexIndices.push(i);
+            rawPositions.push(x, y, z);
+            rawIndices.push(i);
         }
+
+        // Outlier clamp: discard vertices whose Y is far from the bulk
+        const rawCount = rawPositions.length / 3;
+        if (rawCount > 10) {
+            const ys = [];
+            for (let d = 0; d < rawCount; d++) ys.push(rawPositions[d * 3 + 1]);
+            ys.sort((a, b) => a - b);
+            const q1 = ys[Math.floor(rawCount * 0.25)];
+            const q3 = ys[Math.floor(rawCount * 0.75)];
+            const iqr = q3 - q1;
+            const lo = q1 - 3 * iqr;
+            const hi = q3 + 3 * iqr;
+            const positions = [];
+            const vertexIndices = [];
+            for (let d = 0; d < rawCount; d++) {
+                const y = rawPositions[d * 3 + 1];
+                if (y >= lo && y <= hi) {
+                    positions.push(rawPositions[d * 3], y, rawPositions[d * 3 + 2]);
+                    vertexIndices.push(rawIndices[d]);
+                }
+            }
+            rawPositions = positions;
+            rawIndices = vertexIndices;
+        }
+        const positions = rawPositions;
+        const vertexIndices = rawIndices;
 
         const dotCount = positions.length / 3;
         if (dotCount === 0) return;
@@ -2819,9 +2789,9 @@ function rebuildHorizonDots() {
             survey: mesh.userData.survey,
         };
 
-        // Visibility: only show if in dots mode AND layer is visible
+        // Visibility: only show if dots enabled AND layer is visible
         const ls = layerState[mesh.userData.layerName];
-        instanced.visible = params.horizonDisplayMode === 'dots' && (ls ? ls.visible : true);
+        instanced.visible = params.showHorizonDots && (ls ? ls.visible : true);
 
         // Add to same parent group
         mesh.parent.add(instanced);
@@ -2831,21 +2801,16 @@ function rebuildHorizonDots() {
     console.log('Horizon dots rebuilt');
 }
 
-function toggleHorizonDisplayMode(mode) {
+function toggleHorizonDots(show) {
     allSurveyChildren().forEach(c => {
-        if (c.userData.isHorizon && !c.userData.isContour && !c.userData.isHorizonDots) {
-            // Solid mesh visibility
-            const ls = layerState[c.userData.layerName];
-            c.visible = mode === 'solid' && (ls ? ls.visible : true);
-        }
         if (c.userData.isHorizonDots) {
             const ls = layerState[c.userData.layerName];
-            c.visible = mode === 'dots' && (ls ? ls.visible : true);
+            c.visible = show && (ls ? ls.visible : true);
         }
     });
 
-    // Build dots on first switch (or if they were cleaned up)
-    if (mode === 'dots') {
+    // Build dots on first enable (or if they were cleaned up)
+    if (show) {
         const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
         if (!hasDots) rebuildHorizonDots();
     }
@@ -2855,15 +2820,15 @@ function toggleHorizonDisplayMode(mode) {
 const vizFolder = gui.addFolder('Visualization');
 _trackFolder(vizFolder, 'Visualization');
 
-// Horizon display mode controls
-vizFolder.add(params, 'horizonDisplayMode', ['solid', 'dots']).name('Horizon Mode').onChange(v => {
-    toggleHorizonDisplayMode(v);
+// Horizon dots controls (independent of solid mesh visibility)
+vizFolder.add(params, 'showHorizonDots').name('Show Dots').onChange(v => {
+    toggleHorizonDots(v);
 });
 vizFolder.add(params, 'horizonDotSize', 2, 30).name('Dot Size (m)').onChange(() => {
-    if (params.horizonDisplayMode === 'dots') rebuildHorizonDots();
+    if (params.showHorizonDots) rebuildHorizonDots();
 });
 vizFolder.add(params, 'horizonDotSkip', 1, 10, 1).name('Dot Skip').onChange(() => {
-    if (params.horizonDisplayMode === 'dots') rebuildHorizonDots();
+    if (params.showHorizonDots) rebuildHorizonDots();
 });
 
 vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
@@ -2989,6 +2954,10 @@ nornePosFolder.add(params, 'surveyRotationDeg', -180, 180, 1).name('Rotation (°
 nornePosFolder.add(params, 'norneScale', 0.1, 5, 0.1).name('Scale').onChange(applyNorneSurveyOffset);
 nornePosFolder.add(params, 'norneDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyNorneSurveyOffset);
 applyNorneSurveyOffset();
+nornePosFolder.add(params, 'norneBBoxVisible').name('Footprint Box')
+    .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
+nornePosFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
+    .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); if (volveBBox) volveBBox.material.color.set(v); });
 
 // ── Volve Survey Position ───────────────────────────────────────────────────
 const volvePosFolder = gui.addFolder('Volve Survey Position');
@@ -3008,6 +2977,8 @@ volvePosFolder.add(params, 'volveRotationDeg', -180, 180, 1).name('Rotation (°)
 volvePosFolder.add(params, 'volveScale', 0.1, 5, 0.1).name('Scale').onChange(applyVolveSurveyOffset);
 volvePosFolder.add(params, 'volveDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyVolveSurveyOffset);
 applyVolveSurveyOffset();
+volvePosFolder.add(params, 'volveBBoxVisible').name('Footprint Box')
+    .onChange(v => { if (volveBBox) volveBBox.visible = v; });
 
 // ── Wells — top-level panel section ─────────────────────────────────────────
 const wellFolder = gui.addFolder('Wells');
@@ -3312,6 +3283,30 @@ async function initNorneData() {
                     invalidIndices.add(idx);
                     posAttr.setXYZ(idx, 0, 0, 0);
                 }
+            }
+        }
+
+        // Erode the valid region by 2 rings: any valid vertex adjacent to an
+        // invalid vertex is marked invalid.  This trims the noisy outermost
+        // edge cells produced by convex-hull interpolation.
+        for (let ring = 0; ring < 2; ring++) {
+            const erodeSet = new Set();
+            for (let ix = 0; ix < width; ix++) {
+                for (let iy = 0; iy < height; iy++) {
+                    const idx = iy * width + ix;
+                    if (invalidIndices.has(idx)) continue;
+                    let onEdge = false;
+                    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                        const nx = ix + dx, ny = iy + dy;
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) { onEdge = true; break; }
+                        if (invalidIndices.has(ny * width + nx)) { onEdge = true; break; }
+                    }
+                    if (onEdge) erodeSet.add(idx);
+                }
+            }
+            for (const idx of erodeSet) {
+                invalidIndices.add(idx);
+                posAttr.setXYZ(idx, 0, 0, 0);
             }
         }
 
@@ -3629,7 +3624,7 @@ async function initNorneData() {
     // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
     applyState(getCurrentState());
     // Build dots on startup if default mode is 'dots'
-    toggleHorizonDisplayMode(params.horizonDisplayMode);
+    toggleHorizonDots(params.showHorizonDots);
 
     // Refresh Default preset snapshot + dropdown for this dataset
     initPresets();
@@ -3753,7 +3748,7 @@ window.addEventListener('resize', () => {
 
     // Re-apply stored opacity + depthWrite for layers loaded after applyState
     allSurveyChildren().forEach(c => {
-        if (c.userData.layerName) {
+        if (c.userData.layerName && !c.userData.isHorizonDots) {
             try {
                 const saved = JSON.parse(localStorage.getItem('geo_layer_' + c.userData.layerName) || 'null');
                 if (saved && saved.opacity !== undefined) {
