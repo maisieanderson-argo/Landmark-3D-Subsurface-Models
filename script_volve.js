@@ -8,8 +8,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 // scene.fog = new THREE.Fog(0x111111, 2000, 10000); // Removed for clarity
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 50000);
-camera.position.set(2000, 2000, 2000); // Start far out
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 200000);
+camera.position.set(-22000, 12000, -35000); // South of scene, looking north
 scene.add(camera); // Add camera to scene so attached lights work
 
 // Headlamp (Light attached to camera)
@@ -30,6 +30,7 @@ const gui = new GUI();
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
+controls.target.set(-22000, -5000, 5000); // Scene center, north-facing
 
 // Debug: Log camera position on change
 controls.addEventListener('change', () => {
@@ -98,6 +99,29 @@ function updateLoading(msg) {
 function hideLoading() {
     if (loadingEl) loadingEl.style.display = 'none';
 }
+
+// ── SEM Map texture (loaded once, applied as UV-mapped texture on Norne horizons) ──
+const semMapTexture = new THREE.TextureLoader().load('SEM Map 1.png');
+semMapTexture.colorSpace = THREE.SRGBColorSpace;
+
+// ── SEM Map offscreen canvas for pixel sampling (used by dots mode) ──
+let semMapCanvas = null;
+let semMapCtx = null;
+const semMapImg = new Image();
+semMapImg.onload = () => {
+    semMapCanvas = document.createElement('canvas');
+    semMapCanvas.width = semMapImg.naturalWidth;
+    semMapCanvas.height = semMapImg.naturalHeight;
+    semMapCtx = semMapCanvas.getContext('2d', { willReadFrequently: true });
+    semMapCtx.drawImage(semMapImg, 0, 0);
+    console.log(`SEM map canvas ready: ${semMapCanvas.width}×${semMapCanvas.height}`);
+    // Rebuild dots if already in SEM Map + dots mode
+    if (params.selectedColormap === 'SEM Map' && params.horizonDisplayMode === 'dots') {
+        const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
+        if (hasDots) rebuildHorizonDots();
+    }
+};
+semMapImg.src = 'SEM Map 1.png';
 
 // Colormap Definitions (Control Points 0..1)
 const ColormapRegistry = {
@@ -1254,84 +1278,100 @@ const _paramsDefaults = {
     wireframe: false,
     flatShading: false,
     colorByDepth: true,
-    depthColorPerLayer: false,      // true = each horizon uses its own min/max depth
-    faultSmoothIterations: 3,
+    depthColorPerLayer: true,       // each horizon uses its own min/max depth
+    faultSmoothIterations: 2,
     selectedColormap: 'Warm',
-    showContours: true,
-    contourInterval: 44.59,
+    showContours: false,
+    contourInterval: 60.76,
     contourThickness: 0.99,
-    contourOpacity: 0.2,
+    contourOpacity: 0.1809,
     contourColor: '#111111',
-    zScale: 1.0,
-    ambientIntensity: 6.44,
-    sunIntensity: 0.0,
-    headlampIntensity: 0.39,
-    hemiIntensity: 1.62,
+    zScale: 1.3365,
+    ambientIntensity: 2.62,
+    sunIntensity: 0,
+    headlampIntensity: 2.835,
+    hemiIntensity: 0.74,
     lightingEnabled: true,
 
-    faultColorMode: 'original',// 'original' | 'uniform' | 'warm' | 'cool' | 'earth' | 'mono'
-    faultSingleColor: '#aaaaaa',
-    regionalVisible: true,     // master visibility toggle for the regional mesh
-    regionalOpacity: 0.22,    // ghost opacity for the regional Åre surface
-    regionalWireframe: false,  // wireframe overlay for regional surface
-    regionalFitToBase: true,   // true = conform to Norne Base survey; false = smooth polynomial prior
-    regionalBlendKm: 50,       // km beyond survey edge over which to blend conform→poly
-    regionalTopologyFalloff: true, // enable/disable topology falloff on prior surface
-    regionalFitBlendKm: 5,     // km beyond mesh edge for fit-mode transition to prior
-    regionalShowContours: false,
-    regionalContourInterval: 50,
-    regionalContourThickness: 1.2,
-    regionalContourOpacity: 0.4,
-    regionalContourColor: '#7799BB',  // matches regional mesh body color
-    regionalContourSmooth: 0,         // Laplacian smoothing iterations (0 = off)
+    faultColorMode: 'uniform',
+    faultSingleColor: '#bafdef',
+    regionalVisible: true,
+    regionalOpacity: 0.08,
+    regionalWireframe: false,
+    regionalFitToBase: true,
+    regionalBlendKm: 60,
+    regionalTopologyFalloff: false,
+    regionalFitBlendKm: 3,
+    regionalShowContours: true,
+    regionalContourInterval: 101,
+    regionalContourThickness: 1,
+    regionalContourOpacity: 0.36,
+    regionalContourColor: '#95c0f9',
+    regionalContourSmooth: 3,
     // ── Horizon footprint bounding boxes ─────────────────────────────────────
-    norneBBoxVisible: false,            // show Norne horizon footprint box
-    volveBBoxVisible: false,            // show Volve horizon footprint box
-    horizonBBoxColor: '#ffffff',       // wireframe colour
+    norneBBoxVisible: false,
+    volveBBoxVisible: false,
+    horizonBBoxColor: '#ffffff',
     // ── Per-horizon depth exaggeration ───────────────────────────────────────
-    horizonDepthExag: 1.0,             // 1 = true scale; >1 spreads layers apart
+    horizonDepthExag: 1.95,
     // Seismic crossline panel
-    seismicPanelVisible: true,         // toggle the crossline plane
-    seismicPanelOpacity: 0.9,          // 0 = transparent, 1 = fully opaque
+    seismicPanelVisible: false,
+    seismicPanelOpacity: 0.8,
     // ── Survey position offset ───────────────────────────────────────────────
-    surveyOffsetEastKm: 0,             // Norne: km east (positive) or west (negative)
-    surveyOffsetNorthKm: 0,            // Norne: km north (positive) or south (negative)
-    surveyRotationDeg: 0,              // Norne: degrees clockwise rotation
-    norneDepthOffsetM: 0,              // Norne: vertical depth offset in metres (+ = deeper)
-    volveOffsetEastKm: 0,              // Volve: km east (positive) or west (negative)
-    volveOffsetNorthKm: 0,             // Volve: km north (positive) or south (negative)
-    volveRotationDeg: 0,               // Volve: degrees clockwise rotation
-    volveDepthOffsetM: 0,              // Volve: vertical depth offset in metres (+ = deeper)
-    norneScale: 1.0,                   // Norne: uniform XZ scale factor
-    volveScale: 1.0,                   // Volve: uniform XZ scale factor
-    regionalFitToVolve: false,         // fit to Hugin Fm Base (Volve)
+    surveyOffsetEastKm: -24,
+    surveyOffsetNorthKm: 0,
+    surveyRotationDeg: 34,
+    norneDepthOffsetM: 330,
+    volveOffsetEastKm: -30,
+    volveOffsetNorthKm: -12,
+    volveRotationDeg: 21,
+    volveDepthOffsetM: -3000,
+    norneScale: 1.2,
+    volveScale: 2.1,
+    regionalFitToVolve: true,
     // ── Well Trajectories ────────────────────────────────────────────────────
-    showLateral1: true,
-    showLateral2: true,
+    showLateral1: false,
+    showLateral2: false,
     showLateral3: true,
     showLateral4: true,
-    lat1Color: '#7495d8',
-    lat2Color: '#d87474',
-    lat3Color: '#74d8c4',
-    lat4Color: '#d8b774',
-    wellTubeRadius: 8,                 // metres (scene units)
-    wellPathStyle: 'tube',             // 'tube' or 'dots'
-    wellDotSize: 5,                    // dot radius in metres
-    wellDotSpacing: 20,                // metres between dots
+    lat1Color: '#95c0f9',
+    lat2Color: '#95c0f9',
+    lat3Color: '#cefd86',
+    lat4Color: '#95c0f9',
+    wellTubeRadius: 4,
+    wellPathStyle: 'tube',
+    wellDotSize: 4,
+    wellDotSpacing: 40,
     wellShowTargets: true,
     showLat1Targets: true,
     showLat2Targets: true,
-    wellTargetColor: '#3ad994',
-    wellTargetSize: 50,                // metres (scene units)
-    wellTargetOpacity: 0.25,
-    wellOffsetEastKm: 0,
-    wellOffsetNorthKm: 0,
-    wellRotationDeg: 0,
-    wellScale: 1.0,
-    wellDepthOffsetM: 0,
-    lat2RotationDeg: 0,                // Lateral 2 rotation around its KOP (°)
-    lat1LP1Position: 4.5,              // LP1 target position along Lateral 1 (turn point index)
+    wellTargetColor: '#cefd86',
+    wellTargetSize: 75,
+    wellTargetOpacity: 0.55,
+    wellOffsetEastKm: -15,
+    wellOffsetNorthKm: -16.5,
+    wellRotationDeg: 14,
+    wellScale: 3.2,
+    wellDepthOffsetM: -920,
+    lat2RotationDeg: -29,
+    lat1LP1Position: 4.8,
 
+    // ── Surface Grid ─────────────────────────────────────────────────────────
+    surfaceGridVisible: true,
+    surfaceGridOpacity: 0.25,
+    surfaceGridColor: '#4a6a8a',
+    surfaceGridWireframe: true,
+
+    // ── Horizon Display Mode ─────────────────────────────────────────────────
+    horizonDisplayMode: 'dots',       // 'solid' (mesh) or 'dots' (point cloud)
+    horizonDotSize: 8,                 // dot radius in scene metres
+    horizonDotSkip: 1,                 // render every Nth vertex (1 = all)
+};
+
+// Default layer overrides for specific layers (applied when no localStorage exists)
+const DEFAULT_LAYER_OVERRIDES = {
+    'Norne Base':    { visible: true, opacity: 0.7 },
+    'Hugin Fm Base': { visible: true, opacity: 0.7 },
 };
 
 // Merge any previously saved values over the defaults
@@ -1670,7 +1710,11 @@ function initLayerControls(layers) {
         const folder = horizonFolder.addFolder(h.name);
         _trackFolder(folder, 'layer:' + h.name);
         const _storedLayer = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + h.name) || 'null'); } catch(e){ return null; } })();
-        layerState[h.name] = { visible: _storedLayer?.visible ?? true, opacity: _storedLayer?.opacity ?? 1.0 };
+        const _override = DEFAULT_LAYER_OVERRIDES[h.name];
+        layerState[h.name] = {
+            visible: _storedLayer?.visible ?? (_override?.visible ?? false),
+            opacity: _storedLayer?.opacity ?? (_override?.opacity ?? 1.0),
+        };
 
         // Initialise scene from stored state
         const _ls = layerState[h.name];
@@ -1691,6 +1735,8 @@ function initLayerControls(layers) {
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name) {
                     if (c.userData.isContour) { c.userData.layerVisible = v; c.visible = v && params.showContours; }
+                    else if (c.userData.isHorizonDots) { c.visible = v && params.horizonDisplayMode === 'dots'; }
+                    else if (c.userData.isHorizon) { c.visible = v && params.horizonDisplayMode === 'solid'; }
                     else { c.visible = v; }
                 }
             });
@@ -1751,7 +1797,7 @@ function initLayerControls(layers) {
         // ── Individual fault toggles ──────────────────────────────────────────
         faultLayers.forEach(f => {
             const _storedFault = (() => { try { return JSON.parse(localStorage.getItem('geo_layer_' + f.name) || 'null'); } catch(e){ return null; } })();
-            layerState[f.name] = { visible: _storedFault?.visible ?? true, opacity: _storedFault?.opacity ?? 0.75 };
+            layerState[f.name] = { visible: _storedFault?.visible ?? false, opacity: _storedFault?.opacity ?? 0.75 };
 
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === f.name) {
@@ -1835,13 +1881,16 @@ function applyState(state) {
                 if (c.userData.isContour) {
                     c.userData.layerVisible = s.visible;
                     c.visible = s.visible && params.showContours;
+                } else if (c.userData.isHorizonDots) {
+                    c.visible = s.visible && params.horizonDisplayMode === 'dots';
+                } else if (c.userData.isHorizon) {
+                    c.visible = s.visible && params.horizonDisplayMode === 'solid';
+                    c.material.transparent = true;
+                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
                 } else {
                     c.visible = s.visible;
                     c.material.transparent = true;
-                    // s.opacity may be undefined for fault layers — use existing value as fallback
-                    if (s.opacity !== undefined) {
-                        c.material.opacity = s.opacity;
-                    }
+                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
                 }
             }
         });
@@ -1920,6 +1969,15 @@ function applyState(state) {
         regionalMesh.material.needsUpdate = true;
     }
     applyRegionalBlend(params.regionalBlendKm);
+
+    // Surface grid extras
+    if (surfaceGridMesh) {
+        surfaceGridMesh.visible = params.surfaceGridVisible && params.surfaceGridOpacity > 0;
+        surfaceGridMesh.material.opacity = params.surfaceGridOpacity;
+        surfaceGridMesh.material.wireframe = params.surfaceGridWireframe;
+        surfaceGridMesh.material.color.set(params.surfaceGridColor);
+        surfaceGridMesh.material.needsUpdate = true;
+    }
 
     // Seismic crossline panel
     if (seismicPanel) {
@@ -2059,6 +2117,7 @@ const FAULT_PALETTES = {
 // ── Regional Åre Fm context horizon ──────────────────────────────────────────
 let regionalMesh = null;
 let regionalContourMesh = null;
+let surfaceGridMesh = null;
 
 // ── Recompute fit blend data from survey base meshes ────────────────────────
 // Called at load time and whenever survey position/rotation changes.
@@ -2336,6 +2395,58 @@ async function loadRegionalHorizon() {
     return regionalMesh;
 }
 
+// ── Flat surface grid at well top depth ─────────────────────────────────────
+// Covers the exact XZ footprint of the regional context mesh.
+// Y is set to the wellGroup's current Y position (TVD=0 in well-local space).
+function buildSurfaceGrid() {
+    // Remove any previous grid
+    if (surfaceGridMesh) {
+        modelGroup.remove(surfaceGridMesh);
+        surfaceGridMesh.geometry.dispose();
+        surfaceGridMesh.material.dispose();
+        surfaceGridMesh = null;
+    }
+    if (!regionalMesh) { console.warn('buildSurfaceGrid: no regionalMesh loaded'); return; }
+
+    const { rxArr, rzArr } = regionalMesh.userData;
+    // Find the XZ bounding box of the regional mesh
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < rxArr.length; i++) {
+        if (rxArr[i] < minX) minX = rxArr[i];
+        if (rxArr[i] > maxX) maxX = rxArr[i];
+        if (rzArr[i] < minZ) minZ = rzArr[i];
+        if (rzArr[i] > maxZ) maxZ = rzArr[i];
+    }
+    const width  = maxX - minX;
+    const height = maxZ - minZ;
+    const SUBDIVS = 100; // grid resolution
+
+    // Well top depth: TVD=0 in well-local space → wellGroup.position.y in model space
+    const gridY = wellGroup.position.y;
+
+    const geo = new THREE.PlaneGeometry(width, height, SUBDIVS, SUBDIVS);
+    // PlaneGeometry is XY by default — rotate to lie flat (XZ plane) then position
+    geo.rotateX(-Math.PI / 2);
+    // Shift so it covers [minX..maxX] × [minZ..maxZ] at the well top depth
+    geo.translate((minX + maxX) / 2, gridY, (minZ + maxZ) / 2);
+
+    const mat = new THREE.MeshPhongMaterial({
+        color: params.surfaceGridColor,
+        transparent: true,
+        opacity: params.surfaceGridOpacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        wireframe: params.surfaceGridWireframe,
+        shininess: 10,
+    });
+
+    surfaceGridMesh = new THREE.Mesh(geo, mat);
+    surfaceGridMesh.userData.isSurfaceGrid = true;
+    surfaceGridMesh.visible = params.surfaceGridVisible && params.surfaceGridOpacity > 0;
+    modelGroup.add(surfaceGridMesh);
+    console.log(`Surface grid built: ${width.toFixed(0)} × ${height.toFixed(0)} m at Y=${gridY.toFixed(1)}`);
+}
+
 // Recompute the smoothstep blend on the already-loaded regional mesh.
 // blendKm: distance (km) beyond the survey edge over which to blend conform→poly.
 //   0  = sharp cutoff at survey boundary (conformed inside, poly outside)
@@ -2475,18 +2586,70 @@ function updateColoring() {
         m.userData.isRegionalContour ||
         m.userData.isHorizonBBox ||
         m.userData.isSeismicPanel ||
+        m.userData.isHorizonDots ||
         !(m instanceof THREE.Mesh)
     );
 
-    if (params.colorByDepth) {
+    const usingSemMap = params.selectedColormap === 'SEM Map';
+
+    // ── First, clear any SEM texture from ALL meshes (in case we're switching away) ──
+    allSurveyChildren().forEach(mesh => {
+        if (skip(mesh)) return;
+        if (mesh.material.map === semMapTexture) {
+            mesh.material.map = null;
+            mesh.material.needsUpdate = true;
+        }
+    });
+
+    if (usingSemMap && params.colorByDepth) {
+        // ── SEM Map mode: apply texture to Norne horizons, depth-colour the rest ──
+        const isNorne = m => m.parent === norneSurveyGroup;
+
+        // Apply SEM texture to Norne horizon meshes
+        allSurveyChildren().forEach(mesh => {
+            if (skip(mesh)) return;
+            if (isNorne(mesh) && mesh.userData.isHorizon) {
+                mesh.material.vertexColors = false;
+                mesh.material.map = semMapTexture;
+                mesh.material.color.set(0xffffff);
+                mesh.material.needsUpdate = true;
+            }
+        });
+
+        // Depth-colour non-Norne meshes with fallback colormap
+        let minZ = Infinity, maxZ = -Infinity;
+        allSurveyChildren().forEach(mesh => {
+            if (skip(mesh) || isNorne(mesh)) return;
+            const pos = mesh.geometry.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const y = pos.getY(i);
+                if (!isNaN(y) && y !== 0) { if (y < minZ) minZ = y; if (y > maxZ) maxZ = y; }
+            }
+        });
+        const range = maxZ - minZ || 1;
+        allSurveyChildren().forEach(mesh => {
+            if (skip(mesh) || isNorne(mesh)) return;
+            const pos = mesh.geometry.attributes.position;
+            const count = pos.count;
+            const colors = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                const t = (pos.getY(i) - minZ) / range;
+                const c = getColormapColor('Warm', t);
+                colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+            }
+            mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            mesh.material.vertexColors = true;
+            mesh.material.color.set(0xffffff);
+            mesh.material.needsUpdate = true;
+        });
+
+    } else if (params.colorByDepth) {
         if (params.depthColorPerLayer) {
             // ── Per-layer mode: each horizon coloured relative to its own depth extents ──
-            // Good for showing within-surface topography on every layer simultaneously.
             allSurveyChildren().forEach(mesh => {
                 if (skip(mesh)) return;
                 const pos = mesh.geometry.attributes.position;
                 const count = pos.count;
-                // Compute this mesh's own depth range
                 let lo = Infinity, hi = -Infinity;
                 for (let i = 0; i < count; i++) {
                     const y = pos.getY(i);
@@ -2506,7 +2669,6 @@ function updateColoring() {
             });
         } else {
             // ── Global mode: one shared depth range across all horizons (default) ──
-            // Shows relative depth between layers — deepest layer = one end of palette.
             let minZ = Infinity, maxZ = -Infinity;
             allSurveyChildren().forEach(mesh => {
                 if (skip(mesh)) return;
@@ -2544,11 +2706,165 @@ function updateColoring() {
     }
     // Always (re-)apply fault palette — faults are never depth-coloured
     applyFaultColoring();
+
+    // Refresh dots if in dots mode so they pick up the new colors
+    if (params.horizonDisplayMode === 'dots') {
+        const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
+        if (hasDots) rebuildHorizonDots();
+    }
+}
+
+// ── Horizon Dots Mode ──────────────────────────────────────────────────────
+// Renders each horizon as a cloud of small spheres at grid vertices,
+// allowing well targets underneath to be visible through the gaps.
+
+function rebuildHorizonDots() {
+    // Remove any existing dots meshes
+    allSurveyChildren().forEach(c => {
+        if (c.userData.isHorizonDots) {
+            c.geometry.dispose();
+            c.material.dispose();
+            c.parent.remove(c);
+        }
+    });
+
+    const dotGeo = new THREE.SphereGeometry(params.horizonDotSize, 6, 6);
+    const skip = Math.max(1, Math.round(params.horizonDotSkip));
+    const dummy = new THREE.Object3D();
+    const yCompensation = 1 / (params.zScale || 1);
+
+    allSurveyChildren().forEach(mesh => {
+        if (!mesh.userData.isHorizon || mesh.userData.isContour) return;
+
+        const posArr = mesh.geometry.attributes.position.array;
+        const vertCount = posArr.length / 3;
+
+        // Collect dot positions — one dot per mesh vertex (skip every Nth)
+        const positions = [];
+        const vertexIndices = [];
+
+        for (let i = 0; i < vertCount; i += skip) {
+            const x = posArr[i * 3], y = posArr[i * 3 + 1], z = posArr[i * 3 + 2];
+            // Skip degenerate/gap-filled vertices at origin
+            if (x === 0 && y === 0 && z === 0) continue;
+            positions.push(x, y, z);
+            vertexIndices.push(i);
+        }
+
+        const dotCount = positions.length / 3;
+        if (dotCount === 0) return;
+
+        // Use the horizon's current material color
+        const color = mesh.material.color.clone();
+        const dotMat = new THREE.MeshPhongMaterial({
+            color: color,
+            emissive: color.clone().multiplyScalar(0.1),
+            shininess: 40,
+        });
+
+        const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
+        for (let d = 0; d < dotCount; d++) {
+            dummy.position.set(positions[d * 3], positions[d * 3 + 1], positions[d * 3 + 2]);
+            dummy.scale.set(1, yCompensation, 1);
+            dummy.updateMatrix();
+            instanced.setMatrixAt(d, dummy.matrix);
+        }
+        instanced.instanceMatrix.needsUpdate = true;
+
+        // Colour dots — SEM map sampling for Norne meshes, or vertex colors for depth
+        const useSemMap = params.selectedColormap === 'SEM Map'
+            && params.colorByDepth
+            && mesh.parent === norneSurveyGroup
+            && semMapCtx;
+
+        if (useSemMap) {
+            // Sample SEM map image at each vertex's UV coordinate
+            const uvAttr = mesh.geometry.attributes.uv;
+            const instanceColor = new THREE.Color();
+            const w = semMapCanvas.width, h = semMapCanvas.height;
+            for (let d = 0; d < dotCount; d++) {
+                const srcIdx = vertexIndices[d];
+                if (uvAttr && srcIdx < uvAttr.count) {
+                    const u = uvAttr.getX(srcIdx);
+                    const v = uvAttr.getY(srcIdx);
+                    // UV (0,0) = bottom-left in Three.js; canvas (0,0) = top-left
+                    const px = Math.min(Math.floor(u * w), w - 1);
+                    const py = Math.min(Math.floor((1 - v) * h), h - 1);
+                    const pixel = semMapCtx.getImageData(px, py, 1, 1).data;
+                    instanceColor.setRGB(pixel[0] / 255, pixel[1] / 255, pixel[2] / 255);
+                    instanced.setColorAt(d, instanceColor);
+                }
+            }
+            if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
+            // Use white base so instance colors show through
+            dotMat.color.set(0xffffff);
+            dotMat.emissive.set(0x000000);
+        } else if (mesh.geometry.attributes.color) {
+            // Use vertex colors from depth coloring
+            const srcColors = mesh.geometry.attributes.color.array;
+            const instanceColor = new THREE.Color();
+            for (let d = 0; d < dotCount; d++) {
+                const srcIdx = vertexIndices[d];
+                if (srcIdx * 3 + 2 < srcColors.length) {
+                    instanceColor.setRGB(srcColors[srcIdx * 3], srcColors[srcIdx * 3 + 1], srcColors[srcIdx * 3 + 2]);
+                    instanced.setColorAt(d, instanceColor);
+                }
+            }
+            if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
+        }
+
+        instanced.userData = {
+            isHorizonDots: true,
+            layerName: mesh.userData.layerName,
+            survey: mesh.userData.survey,
+        };
+
+        // Visibility: only show if in dots mode AND layer is visible
+        const ls = layerState[mesh.userData.layerName];
+        instanced.visible = params.horizonDisplayMode === 'dots' && (ls ? ls.visible : true);
+
+        // Add to same parent group
+        mesh.parent.add(instanced);
+    });
+
+    dotGeo.dispose(); // shared geometry already cloned into each InstancedMesh
+    console.log('Horizon dots rebuilt');
+}
+
+function toggleHorizonDisplayMode(mode) {
+    allSurveyChildren().forEach(c => {
+        if (c.userData.isHorizon && !c.userData.isContour && !c.userData.isHorizonDots) {
+            // Solid mesh visibility
+            const ls = layerState[c.userData.layerName];
+            c.visible = mode === 'solid' && (ls ? ls.visible : true);
+        }
+        if (c.userData.isHorizonDots) {
+            const ls = layerState[c.userData.layerName];
+            c.visible = mode === 'dots' && (ls ? ls.visible : true);
+        }
+    });
+
+    // Build dots on first switch (or if they were cleaned up)
+    if (mode === 'dots') {
+        const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
+        if (!hasDots) rebuildHorizonDots();
+    }
 }
 
 
 const vizFolder = gui.addFolder('Visualization');
 _trackFolder(vizFolder, 'Visualization');
+
+// Horizon display mode controls
+vizFolder.add(params, 'horizonDisplayMode', ['solid', 'dots']).name('Horizon Mode').onChange(v => {
+    toggleHorizonDisplayMode(v);
+});
+vizFolder.add(params, 'horizonDotSize', 2, 30).name('Dot Size (m)').onChange(() => {
+    if (params.horizonDisplayMode === 'dots') rebuildHorizonDots();
+});
+vizFolder.add(params, 'horizonDotSkip', 1, 10, 1).name('Dot Skip').onChange(() => {
+    if (params.horizonDisplayMode === 'dots') rebuildHorizonDots();
+});
 
 vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
     modelGroup.scale.y = v;
@@ -2582,7 +2898,7 @@ depthFolder.add(params, 'depthColorPerLayer').name('Per-Layer Gradient').onChang
     if (params.colorByDepth) updateColoring();
 });
 
-depthFolder.add(params, 'selectedColormap', Object.keys(ColormapRegistry)).name('Colormap').onChange(() => {
+depthFolder.add(params, 'selectedColormap', [...Object.keys(ColormapRegistry), 'SEM Map']).name('Colormap').onChange(() => {
     if (params.colorByDepth) updateColoring();
 });
 
@@ -2775,6 +3091,32 @@ regionalFolder.add(params, 'regionalWireframe').name('Wireframe').onChange(v => 
     }
 });
 
+// ── Surface Grid sub-folder ──────────────────────────────────────────────────
+const surfaceGridFolder = regionalFolder.addFolder('Surface Grid');
+_trackFolder(surfaceGridFolder, 'Surface Grid');
+surfaceGridFolder.add(params, 'surfaceGridVisible').name('Show').onChange(v => {
+    if (surfaceGridMesh) surfaceGridMesh.visible = v && params.surfaceGridOpacity > 0;
+});
+surfaceGridFolder.add(params, 'surfaceGridOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
+    if (surfaceGridMesh) {
+        surfaceGridMesh.material.opacity = v;
+        surfaceGridMesh.visible = params.surfaceGridVisible && v > 0;
+        surfaceGridMesh.material.needsUpdate = true;
+    }
+});
+surfaceGridFolder.addColor(params, 'surfaceGridColor').name('Color').onChange(v => {
+    if (surfaceGridMesh) {
+        surfaceGridMesh.material.color.set(v);
+        surfaceGridMesh.material.needsUpdate = true;
+    }
+});
+surfaceGridFolder.add(params, 'surfaceGridWireframe').name('Wireframe').onChange(v => {
+    if (surfaceGridMesh) {
+        surfaceGridMesh.material.wireframe = v;
+        surfaceGridMesh.material.needsUpdate = true;
+    }
+});
+
 const regionalTopoFolder = regionalFolder.addFolder('Topology Lines');
 _trackFolder(regionalTopoFolder, 'Regional Topology Lines');
 
@@ -2891,13 +3233,13 @@ async function initNorneData() {
 
     const [horizonResults, faultResults] = await Promise.all([
         Promise.all([
-            loadHorizon('Åre Fm Top',   'Norne_Are_Top_hires.csv',   0xFF6B6B),
-            loadHorizon('Tilje Fm Top', 'Norne_Tilje_Top_hires.csv', 0xFFAA44),
-            loadHorizon('Ile Fm Top',   'Norne_Ile_Top_hires.csv',   0xFFDD22),
-            loadHorizon('Tofte Fm Top', 'Norne_Tofte_Top_hires.csv', 0x66CC66),
-            loadHorizon('Garn Fm Top',  'Norne_Garn_Top_hires.csv',  0x4ECDC4),
-            loadHorizon('Not Fm Top',   'Norne_Not_Top_hires.csv',   0x45B7D1),
-            loadHorizon('Norne Base',   'Norne_Base_hires.csv',      0x9B59B6)
+            loadHorizon('Åre Fm Top',   'Norne_Are_Top_hires_regrid.csv',   0xFF6B6B),
+            loadHorizon('Tilje Fm Top', 'Norne_Tilje_Top_hires_regrid.csv', 0xFFAA44),
+            loadHorizon('Ile Fm Top',   'Norne_Ile_Top_hires_regrid.csv',   0xFFDD22),
+            loadHorizon('Tofte Fm Top', 'Norne_Tofte_Top_hires_regrid.csv', 0x66CC66),
+            loadHorizon('Garn Fm Top',  'Norne_Garn_Top_hires_regrid.csv',  0x4ECDC4),
+            loadHorizon('Not Fm Top',   'Norne_Not_Top_hires_regrid.csv',   0x45B7D1),
+            loadHorizon('Norne Base',   'Norne_Base_hires_regrid.csv',      0x9B59B6)
         ]),
 
 
@@ -2973,16 +3315,60 @@ async function initNorneData() {
             }
         }
 
-        // Remove degenerate triangles
+        // Remove degenerate triangles (invalid vertices + spatially stretched edges)
         const rawIndices = geometry.index.array;
-        const cleanIndices = [];
+        let cleanIndices = [];
         for (let i = 0; i < rawIndices.length; i += 3) {
             const a = rawIndices[i], b = rawIndices[i + 1], c = rawIndices[i + 2];
             if (!invalidIndices.has(a) && !invalidIndices.has(b) && !invalidIndices.has(c)) {
                 cleanIndices.push(a, b, c);
             }
         }
-        geometry.setIndex(cleanIndices);
+
+        // Compute typical edge length from valid adjacent vertices to set threshold
+        // Use XZ (horizontal) distance — ignore Y (depth) which varies naturally
+        let edgeLenSum = 0, edgeLenCnt = 0;
+        for (let ix = 0; ix < width - 1; ix++) {
+            for (let iy = 0; iy < height; iy++) {
+                const i0 = iy * width + ix, i1 = iy * width + (ix + 1);
+                if (!invalidIndices.has(i0) && !invalidIndices.has(i1)) {
+                    const dx = posAttr.getX(i1) - posAttr.getX(i0);
+                    const dz = posAttr.getZ(i1) - posAttr.getZ(i0);
+                    edgeLenSum += Math.sqrt(dx * dx + dz * dz);
+                    edgeLenCnt++;
+                    break;  // one sample per column is enough
+                }
+            }
+            if (edgeLenCnt > 10) break;
+        }
+        const avgEdge = edgeLenCnt > 0 ? edgeLenSum / edgeLenCnt : 50;
+        const maxEdgeLen = avgEdge * 3.0; // Allow up to 3× average before culling
+
+        // Second pass: cull triangles with stretched edges
+        const finalIndices = [];
+        let culledCount = 0;
+        for (let i = 0; i < cleanIndices.length; i += 3) {
+            const a = cleanIndices[i], b = cleanIndices[i + 1], c = cleanIndices[i + 2];
+
+            // Check all 3 edges in XZ (horizontal) plane
+            let tooLong = false;
+            const pairs = [[a, b], [b, c], [c, a]];
+            for (const [p, q] of pairs) {
+                const dx = posAttr.getX(p) - posAttr.getX(q);
+                const dz = posAttr.getZ(p) - posAttr.getZ(q);
+                if (dx * dx + dz * dz > maxEdgeLen * maxEdgeLen) {
+                    tooLong = true;
+                    break;
+                }
+            }
+            if (!tooLong) {
+                finalIndices.push(a, b, c);
+            } else {
+                culledCount++;
+            }
+        }
+        if (culledCount > 0) console.log(`  Culled ${culledCount} stretched edge triangles for ${h.name}`);
+        geometry.setIndex(finalIndices);
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
 
@@ -3236,12 +3622,14 @@ async function initNorneData() {
     initLayerControls(allLayers);
     applyFaultSmoothing(params.faultSmoothIterations);
     applyHorizonDepthExag(params.horizonDepthExag);
-    loadRegionalHorizon(); // async — adds ghost surface once CSV loads
+    loadRegionalHorizon().then(() => buildSurfaceGrid()); // async — adds ghost surface once CSV loads, then builds flat grid
 
 
     // Apply ALL stored settings to the scene (wireframe, zScale, lighting,
     // flatShading, depth coloring, contour uniforms, layer visibility, etc.)
     applyState(getCurrentState());
+    // Build dots on startup if default mode is 'dots'
+    toggleHorizonDisplayMode(params.horizonDisplayMode);
 
     // Refresh Default preset snapshot + dropdown for this dataset
     initPresets();
