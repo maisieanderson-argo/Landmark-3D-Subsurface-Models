@@ -5,7 +5,7 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 // Setup Three.js
 const container = document.getElementById('canvas-container');
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111111);
+// Background color is applied from params after _paramsDefaults is initialised (see below).
 // scene.fog = new THREE.Fog(0x111111, 2000, 10000); // Removed for clarity
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 200000);
@@ -32,11 +32,29 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.target.set(-22000, -5000, 5000); // Scene center, north-facing
 
-// Debug: Log camera position on change
+// Restore persisted camera position if available
+try {
+    const savedCam = JSON.parse(localStorage.getItem('geo_camera'));
+    if (savedCam) {
+        camera.position.set(savedCam.px, savedCam.py, savedCam.pz);
+        controls.target.set(savedCam.tx, savedCam.ty, savedCam.tz);
+    }
+} catch (e) { /* ignore parse errors */ }
+
+// Persist camera position 2 seconds after the camera stops moving
+let _cameraSaveTimer = null;
 controls.addEventListener('change', () => {
-    // Throttling could be added but for manual positioning this is fine
-    // console.log(`Camera Pos: x=${camera.position.x.toFixed(2)}, y=${camera.position.y.toFixed(2)}, z=${camera.position.z.toFixed(2)} | Target: x=${controls.target.x.toFixed(2)}, y=${controls.target.y.toFixed(2)}, z=${controls.target.z.toFixed(2)}`);
+    if (_cameraSaveTimer) clearTimeout(_cameraSaveTimer);
+    _cameraSaveTimer = setTimeout(() => {
+        try {
+            localStorage.setItem('geo_camera', JSON.stringify({
+                px: camera.position.x, py: camera.position.y, pz: camera.position.z,
+                tx: controls.target.x,  ty: controls.target.y,  tz: controls.target.z,
+            }));
+        } catch (e) { /* quota exceeded etc. */ }
+    }, 2000);
 });
+
 // Expose a helper to get the current view
 window.getCameraView = () => {
     console.log(`
@@ -83,9 +101,20 @@ modelGroup.add(volveSurveyGroup);
 const wellGroup = new THREE.Group();
 modelGroup.add(wellGroup);
 
+// Custom horizon targets are rendered in world space (outside survey groups)
+// so they never get pulled into horizon/fault colouring passes.
+const customTargetGroup = new THREE.Group();
+scene.add(customTargetGroup);
+
 // Helper: iterate meshes from BOTH survey groups (for survey-spanning operations)
 function allSurveyChildren() {
     return [...norneSurveyGroup.children, ...volveSurveyGroup.children];
+}
+
+function getSurveyGroupByName(survey) {
+    if (survey === 'norne') return norneSurveyGroup;
+    if (survey === 'volve') return volveSurveyGroup;
+    return null;
 }
 
 // Loading UI
@@ -100,28 +129,78 @@ function hideLoading() {
     if (loadingEl) loadingEl.style.display = 'none';
 }
 
-// ── SEM Map texture (loaded once, applied as UV-mapped texture on Norne horizons) ──
-const semMapTexture = new THREE.TextureLoader().load('SEM Map 1.png');
-semMapTexture.colorSpace = THREE.SRGBColorSpace;
+// ── Per-layer texture mapping for Norne + Volve horizons ──
+const TEXTURE_ASSIGNMENTS = [
+    // Order matches the horizon loading order in initNorneData()
+    { survey: 'norne', layerName: 'Åre Fm Top', imageIndex: 1 },
+    { survey: 'norne', layerName: 'Tilje Fm Top', imageIndex: 2 },
+    { survey: 'norne', layerName: 'Ile Fm Top', imageIndex: 3 },
+    { survey: 'norne', layerName: 'Tofte Fm Top', imageIndex: 4 },
+    { survey: 'norne', layerName: 'Garn Fm Top', imageIndex: 5 },
+    { survey: 'norne', layerName: 'Not Fm Top', imageIndex: 6 },
+    { survey: 'norne', layerName: 'Norne Base', imageIndex: 7 },
+    // Volve reuses the same image families in its horizon load order.
+    { survey: 'volve', layerName: 'BCU (Base Cretaceous Unconformity)', imageIndex: 1 },
+    { survey: 'volve', layerName: 'Hugin Fm Top', imageIndex: 2 },
+    { survey: 'volve', layerName: 'Hugin Fm Base', imageIndex: 3 },
+];
 
-// ── SEM Map offscreen canvas for pixel sampling (used by dots mode) ──
-let semMapCanvas = null;
-let semMapCtx = null;
-const semMapImg = new Image();
-semMapImg.onload = () => {
-    semMapCanvas = document.createElement('canvas');
-    semMapCanvas.width = semMapImg.naturalWidth;
-    semMapCanvas.height = semMapImg.naturalHeight;
-    semMapCtx = semMapCanvas.getContext('2d', { willReadFrequently: true });
-    semMapCtx.drawImage(semMapImg, 0, 0);
-    console.log(`SEM map canvas ready: ${semMapCanvas.width}×${semMapCanvas.height}`);
-    // Rebuild dots if already in SEM Map + dots mode
-    if (params.selectedColormap === 'SEM Map' && params.showHorizonDots) {
-        const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
-        if (hasDots) rebuildHorizonDots();
-    }
-};
-semMapImg.src = 'SEM Map 1.png';
+function getTextureKey(survey, layerName) {
+    return `${survey}:${layerName}`;
+}
+
+function getMeshTextureKey(mesh) {
+    return getTextureKey(mesh.userData.survey, mesh.userData.layerName);
+}
+
+// Load per-layer SEM Map textures (SEM-Map-1.png through SEM-Map-7.png)
+const semMapTextures = {};   // survey:layerName → THREE.Texture
+const specDTextures = {};    // survey:layerName → THREE.Texture
+const loader = new THREE.TextureLoader();
+TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
+    const key = getTextureKey(survey, layerName);
+    const idx = imageIndex;
+    const semTex = loader.load(`SEM-Map-${idx}.png`);
+    semTex.colorSpace = THREE.SRGBColorSpace;
+    semMapTextures[key] = semTex;
+
+    const specTex = loader.load(`SpecD${idx}.png`);
+    specTex.colorSpace = THREE.SRGBColorSpace;
+    specDTextures[key] = specTex;
+});
+// Backward-compat alias used by the clear-texture sweep
+const semMapTexture = semMapTextures[getTextureKey('norne', 'Åre Fm Top')];
+
+// ── Per-layer offscreen canvases for pixel sampling (used by dots mode) ──
+const semMapCanvases = {};   // survey:layerName → { canvas, ctx }
+const specDCanvases = {};    // survey:layerName → { canvas, ctx }
+
+function _loadCanvasForLayer(src, targetMap, survey, layerName) {
+    const img = new Image();
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        targetMap[getTextureKey(survey, layerName)] = { canvas, ctx };
+        console.log(`Canvas ready for ${survey}:${layerName}: ${canvas.width}×${canvas.height} (${src})`);
+        // Rebuild dots if already showing the relevant texture mode
+        const isSem  = params.selectedColormap === 'SEM Map';
+        const isSpec = params.selectedColormap === 'Spec-D';
+        if ((isSem || isSpec) && params.showHorizonDots) {
+            const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
+            if (hasDots) rebuildHorizonDots();
+        }
+    };
+    img.src = src;
+}
+
+TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
+    const idx = imageIndex;
+    _loadCanvasForLayer(`SEM-Map-${idx}.png`, semMapCanvases, survey, layerName);
+    _loadCanvasForLayer(`SpecD${idx}.png`, specDCanvases, survey, layerName);
+});
 
 // Colormap Definitions (Control Points 0..1)
 const ColormapRegistry = {
@@ -612,25 +691,25 @@ const LATERAL2_TURN_POINTS = [
     { sectionType: 'Lateral',       md: 10650.0, inc: 82.00, azi: 230.00, tvd: 4080.0, northing: 12140685.00, easting: 2559202.00, target: 'BHL2' },
 ];
 
-// Lateral 3 — higher KOP (1200 ft), single dogleg to same LP1/BHL targets as Lateral 1
+// Lateral 3 — deeper KOP (~1856 ft), extended build to same LP1/BHL targets as Lateral 1
 const LATERAL3_TURN_POINTS = [
     { sectionType: 'Tie Line',      md: 0.0,     inc: 0.00,  azi: 0.00,   tvd: 0.0,    northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
-    { sectionType: 'Straight MD',   md: 1200.0,  inc: 0.00,  azi: 0.00,   tvd: 1200.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
-    { sectionType: 'Build + Turn',  md: 3315.5,  inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145538.01, easting: 2564064.95, target: 'LP1' },
+    { sectionType: 'Straight MD',   md: 1856.0,  inc: 0.00,  azi: 0.00,   tvd: 1856.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
+    { sectionType: 'Build + Turn',  md: 4800.0,  inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145538.01, easting: 2564064.95, target: 'LP1' },
     { sectionType: 'Lateral',       md: 13359.0, inc: 78.51, azi: 270.00, tvd: 5000.0, northing: 12145537.99, easting: 2554222.58, target: 'BHL' },
 ];
 
-// Lateral 4 — higher KOP (1200 ft), single dogleg to same LP2/BHL2 targets as Lateral 2
+// Lateral 4 — deeper KOP (~1856 ft), extended build to same LP2/BHL2 targets as Lateral 2, 30% longer lateral
 const LATERAL4_TURN_POINTS = [
-    { sectionType: 'KOP Junction',  md: 1200.0,  inc: 0.00,  azi: 175.00, tvd: 1200.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
-    { sectionType: 'Build + Turn',  md: 3650.0,  inc: 82.00, azi: 230.00, tvd: 3105.0, northing: 12145139.00, easting: 2564512.00, target: 'LP2' },
-    { sectionType: 'Lateral',       md: 10650.0, inc: 82.00, azi: 230.00, tvd: 4080.0, northing: 12140685.00, easting: 2559202.00, target: 'BHL2' },
+    { sectionType: 'KOP Junction',  md: 1856.0,  inc: 0.00,  azi: 175.00, tvd: 1856.0, northing: WELL_SURFACE_NORTHING, easting: WELL_SURFACE_EASTING, target: '' },
+    { sectionType: 'Build + Turn',  md: 5200.0,  inc: 82.00, azi: 230.00, tvd: 3105.0, northing: 12145139.00, easting: 2564512.00, target: 'LP2' },
+    { sectionType: 'Lateral',       md: 13750.0, inc: 82.00, azi: 230.00, tvd: 4350.0, northing: 12139297.00, easting: 2557308.00, target: 'BHL2' },
 ];
 
 const WELL_TARGETS = [
-    { name: 'LP1',  wellbore: 'Lateral 1', tpIndexParam: 'lat1LP1Position' },
-    { name: 'BHL',  wellbore: 'Lateral 1', tpIndex: 5 },
-    { name: 'LP2',  wellbore: 'Lateral 2', tpIndex: 4 },
+    { name: 'LP1',  wellbore: 'Lateral 1', tpIndexParam: 'lat1LP1Position', depthParam: 'targetLP1YOffset' },
+    { name: 'BHL',  wellbore: 'Lateral 1', tpIndexParam: 'lat1BHLPosition', depthParam: 'targetBHLYOffset' },
+    { name: 'LP2',  wellbore: 'Lateral 2', tpIndexParam: 'lat2LP2Position', depthParam: 'targetLP2YOffset' },
 ];
 
 const WELL_DEFS = [
@@ -703,11 +782,8 @@ function wellToWorld(northing, easting, tvd) {
     );
 }
 
-// Pre-compute stations
+// Well stations map — recomputed each time buildWellTrajectories() is called
 const wellStations = new Map();
-for (const wb of WELL_DEFS) {
-    wellStations.set(wb.name, minimumCurvature(wb.turnPoints));
-}
 
 // Smoothly correct Lat 3/4 build sections to meet Lat 1/2 target positions.
 // Instead of a hard snap (which creates a kink), we linearly ramp the
@@ -752,8 +828,6 @@ function blendLateralToReference(lateralName, refName, targetTPLabel) {
         stns[i].tvd      += dT * t;
     }
 }
-blendLateralToReference('Lateral 3', 'Lateral 1', 'LP1');
-blendLateralToReference('Lateral 4', 'Lateral 2', 'LP2');
 
 // ── Build Well Trajectories ────────────────────────────────────
 function buildWellTrajectories() {
@@ -766,13 +840,115 @@ function buildWellTrajectories() {
         else c.material?.dispose();
     }
 
+    // Recompute stations from original turn-point data each rebuild.
+    wellStations.clear();
     for (const wb of WELL_DEFS) {
-        if (!params[wb.visParam]) continue;
+        wellStations.set(wb.name, minimumCurvature(wb.turnPoints));
+    }
+
+    // Apply Y-offset depth adjustments by bending station TVDs.
+    // For each target, find it in ALL laterals (not just the primary wellbore)
+    // so that Lat 3/4 get the same offsets as Lat 1/2 before blending.
+    // Per-well combined offset profile:
+    //   • Smoothstep ramp from one TP before the first target up to it
+    //   • Linear interpolation between consecutive targets (pivot behaviour)
+    //   • Hold the last target's offset for stations beyond it
+    {
+        const targetsByWell = new Map();
+        let anyOffset = false;
+
+        for (const tgt of WELL_TARGETS) {
+            if (!tgt.depthParam) continue;
+            const yOffsetM = params[tgt.depthParam] || 0;
+            const tvdDeltaFt = -yOffsetM / FT_TO_M;
+            if (yOffsetM !== 0) anyOffset = true;
+
+            // Find this target label in ALL laterals, not just tgt.wellbore
+            for (const wb of WELL_DEFS) {
+                const tpIdx = wb.turnPoints.findIndex(tp => tp.target === tgt.name);
+                if (tpIdx < 0) continue;
+                const stns = wellStations.get(wb.name);
+                if (!stns) continue;
+
+                if (!targetsByWell.has(wb.name)) targetsByWell.set(wb.name, []);
+                const stIdx = Math.min(tpIdx * WELL_INTERP_STEPS, stns.length - 1);
+                targetsByWell.get(wb.name).push({ stIdx, tvdDeltaFt, tpIdx });
+            }
+        }
+
+        if (anyOffset) {
+            for (const [wellName, targets] of targetsByWell) {
+                const stns = wellStations.get(wellName);
+                if (!stns || targets.length === 0) continue;
+
+                targets.sort((a, b) => a.stIdx - b.stIdx);
+                const first = targets[0];
+                const last  = targets[targets.length - 1];
+                const rampStart = Math.max(0, (first.tpIdx - 1) * WELL_INTERP_STEPS);
+
+                for (let i = rampStart; i < stns.length; i++) {
+                    let offset = 0;
+
+                    if (i < first.stIdx) {
+                        // Smoothstep ramp up to first target
+                        if (first.stIdx > rampStart) {
+                            const frac = (i - rampStart) / (first.stIdx - rampStart);
+                            offset = first.tvdDeltaFt * frac * frac * (3 - 2 * frac);
+                        }
+                    } else if (i >= last.stIdx) {
+                        // Hold last target's offset
+                        offset = last.tvdDeltaFt;
+                    } else {
+                        // Between two targets: linear interpolation
+                        for (let t = 0; t < targets.length - 1; t++) {
+                            if (i >= targets[t].stIdx && i < targets[t + 1].stIdx) {
+                                const span = targets[t + 1].stIdx - targets[t].stIdx;
+                                const frac = span > 0 ? (i - targets[t].stIdx) / span : 0;
+                                offset = targets[t].tvdDeltaFt + (targets[t + 1].tvdDeltaFt - targets[t].tvdDeltaFt) * frac;
+                                break;
+                            }
+                        }
+                    }
+
+                    stns[i].tvd += offset;
+                }
+            }
+        }
+    }
+
+    blendLateralToReference('Lateral 3', 'Lateral 1', 'LP1');
+    blendLateralToReference('Lateral 4', 'Lateral 2', 'LP2');
+
+    for (const wb of WELL_DEFS) {
         const stations = wellStations.get(wb.name);
         if (!stations || stations.length < 2) continue;
 
         const baseColor = new THREE.Color(params[wb.colorParam]);
 
+        // Wellhead cone — always built, independent of lateral visibility
+        const s0 = stations[0];
+        if (s0.tvd === 0) {
+            const headPos = wellToWorld(s0.northing, s0.easting, s0.tvd);
+            const sc = params.wellheadConeScale;
+            const coneRadius = params.wellTubeRadius * 3 * sc;
+            const coneHeight = coneRadius * 3;
+            const headGeo = new THREE.ConeGeometry(coneRadius, coneHeight, 16);
+            const coneColor = new THREE.Color(params.wellheadConeColor);
+            const headMat = new THREE.MeshPhongMaterial({
+                color: coneColor,
+                emissive: coneColor.clone().multiplyScalar(0.3),
+            });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.copy(headPos);
+            head.position.y += coneHeight * 0.5; // sit base at wellhead
+            head.scale.y = 1 / (params.zScale || 1);
+            head.userData = { isWell: true, isWellheadCone: true, wellbore: wb.name };
+            head.visible = params.wellheadConeVisible;
+            wellGroup.add(head);
+        }
+
+        // Skip trajectory/markers if this lateral is hidden
+        if (!params[wb.visParam]) continue;
         // Collect all world-space points for this wellbore (needed for dots mode)
         const allPts = [];
         for (let tpIdx = 0; tpIdx < wb.turnPoints.length - 1; tpIdx++) {
@@ -844,25 +1020,9 @@ function buildWellTrajectories() {
             wellGroup.add(instanced);
         }
 
-        // Wellhead sphere
-        const s0 = stations[0];
-        if (s0.tvd === 0) {
-            const headPos = wellToWorld(s0.northing, s0.easting, s0.tvd);
-            const headGeo = new THREE.SphereGeometry(params.wellTubeRadius * 3, 16, 16);
-            const headMat = new THREE.MeshPhongMaterial({
-                color: baseColor,
-                emissive: baseColor.clone().multiplyScalar(0.3),
-            });
-            const head = new THREE.Mesh(headGeo, headMat);
-            head.position.copy(headPos);
-            head.scale.y = 1 / (params.zScale || 1);
-            head.userData = { isWell: true, wellbore: wb.name };
-            wellGroup.add(head);
-        }
-
-        // Turn point markers
+        // Turn point markers (skip index 0 = surface wellhead, now handled by cone)
         {
-        for (let tpIdx = 0; tpIdx < wb.turnPoints.length; tpIdx++) {
+        for (let tpIdx = 1; tpIdx < wb.turnPoints.length; tpIdx++) {
             const stationIdx = Math.min(tpIdx * WELL_INTERP_STEPS, stations.length - 1);
             const s = stations[stationIdx];
             const tpPos = wellToWorld(s.northing, s.easting, s.tvd);
@@ -918,24 +1078,40 @@ function buildWellTrajectories() {
         const tColor = new THREE.Color(params.wellTargetColor);
         const ringTubeRadius = Math.max(0.5, params.wellTargetSize * 0.02); // thin ring tube
         for (const tgt of WELL_TARGETS) {
-            const wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
+            let wb = WELL_DEFS.find(w => w.name === tgt.wellbore);
             if (!wb) continue;
             // Per-lateral target visibility
             if (wb.targetVisParam && !params[wb.targetVisParam]) continue;
-            // Need stations even if the well tube is hidden — compute if missing
-            if (!wellStations.has(wb.name)) {
-                const stns = minimumCurvature(wb.turnPoints, WELL_INTERP_STEPS);
-                wellStations.set(wb.name, stns);
+
+            // Prefer a VISIBLE lateral that shares the same target label,
+            // so the orb sits on the rendered well path (not a hidden one).
+            let useWb = wb;
+            if (!params[wb.visParam]) {
+                const alt = WELL_DEFS.find(w =>
+                    w.name !== wb.name &&
+                    params[w.visParam] &&
+                    w.turnPoints.some(tp => tp.target === tgt.name));
+                if (alt) useWb = alt;
             }
 
-            const stns = wellStations.get(wb.name);
-            const tpIdx = tgt.tpIndexParam ? params[tgt.tpIndexParam] : tgt.tpIndex;
-            const stIdx = Math.min(Math.round(tpIdx * WELL_INTERP_STEPS), stns.length - 1);
+            // Ensure stations exist
+            if (!wellStations.has(useWb.name)) {
+                wellStations.set(useWb.name, minimumCurvature(useWb.turnPoints));
+            }
+
+            const stns = wellStations.get(useWb.name);
+            // Map the target label to the correct TP index on the chosen lateral
+            const tpIdxOnLateral = useWb.turnPoints.findIndex(tp => tp.target === tgt.name);
+            let stIdx;
+            {
+                const tpIdx = tgt.tpIndexParam ? params[tgt.tpIndexParam] : tgt.tpIndex;
+                stIdx = Math.min(Math.round(tpIdx * WELL_INTERP_STEPS), stns.length - 1);
+            }
             const s = stns[stIdx];
             const pos = wellToWorld(s.northing, s.easting, s.tvd);
 
             // Rotate Lateral 2/4 targets around KOP
-            if ((tgt.wellbore === 'Lateral 2' || tgt.wellbore === 'Lateral 4') && params.lat2RotationDeg !== 0) {
+            if ((useWb.name === 'Lateral 2' || useWb.name === 'Lateral 4') && params.lat2RotationDeg !== 0) {
                 const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
                 const angle = -params.lat2RotationDeg * Math.PI / 180;
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
@@ -961,7 +1137,25 @@ function buildWellTrajectories() {
             orb.userData = { isWell: true, isTarget: true };
             wellGroup.add(orb);
 
-            // ── Horizontal ring (lies flat in XZ plane) ──────────────────────
+            // ── Ring perpendicular to wellbore ─────────────────────────────
+            // Compute wellbore tangent at the target station from neighbors
+            const prevIdx = Math.max(0, stIdx - 1);
+            const nextIdx = Math.min(stns.length - 1, stIdx + 1);
+            const pPrev = wellToWorld(stns[prevIdx].northing, stns[prevIdx].easting, stns[prevIdx].tvd);
+            const pNext = wellToWorld(stns[nextIdx].northing, stns[nextIdx].easting, stns[nextIdx].tvd);
+            // Apply same Lat 2/4 rotation to tangent endpoints
+            if ((tgt.wellbore === 'Lateral 2' || tgt.wellbore === 'Lateral 4') && params.lat2RotationDeg !== 0) {
+                const kopWorld = wellToWorld(LATERAL2_TURN_POINTS[0].northing, LATERAL2_TURN_POINTS[0].easting, LATERAL2_TURN_POINTS[0].tvd);
+                const angle = -params.lat2RotationDeg * Math.PI / 180;
+                const cosA = Math.cos(angle), sinA = Math.sin(angle);
+                for (const p of [pPrev, pNext]) {
+                    const dx = p.x - kopWorld.x, dz = p.z - kopWorld.z;
+                    p.x = kopWorld.x + dx * cosA - dz * sinA;
+                    p.z = kopWorld.z + dx * sinA + dz * cosA;
+                }
+            }
+            const tangent = new THREE.Vector3().subVectors(pNext, pPrev).normalize();
+
             const hRingGeo = new THREE.TorusGeometry(params.wellTargetSize * 1.625, ringTubeRadius, 12, 48);
             const ringMat = new THREE.MeshPhongMaterial({
                 color: tColor,
@@ -973,10 +1167,305 @@ function buildWellTrajectories() {
             });
             const hRing = new THREE.Mesh(hRingGeo, ringMat);
             hRing.position.copy(pos);
-            hRing.scale.y = 1 / (params.zScale || 1);
+            // Torus default normal is (0,0,1); rotate it to align with the wellbore tangent
+            const defaultNormal = new THREE.Vector3(0, 0, 1);
+            hRing.quaternion.setFromUnitVectors(defaultNormal, tangent);
+            // Compensate for z-scale on top of the quaternion rotation
+            const yComp = 1 / (params.zScale || 1);
+            hRing.scale.set(1, yComp, 1);
             hRing.userData = { isWell: true, isTarget: true };
             wellGroup.add(hRing);
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM HORIZON TARGETS
+// ─────────────────────────────────────────────────────────────
+const customTargets = []; // { id, name, survey, layerName, baseLocal:{x,y,z}, offsetEastM, offsetNorthM, visible, color, size, opacity }
+let customTargetSerial = 1;
+
+let customTargetFolder = null;
+let customTargetDeleteAllCtrl = null;
+let customTargetRowFolders = [];
+
+const customTargetUi = {
+    deleteAll: () => clearAllCustomTargets(),
+};
+
+function nextCustomTargetName() {
+    let name = `Target ${customTargetSerial++}`;
+    while (customTargets.some(t => t.name === name)) {
+        name = `Target ${customTargetSerial++}`;
+    }
+    return name;
+}
+
+function rebuildCustomTargetSerial() {
+    customTargetSerial = 1;
+    customTargets.forEach(t => {
+        const m = /^Target\s+(\d+)$/.exec(t.name || '');
+        if (m) customTargetSerial = Math.max(customTargetSerial, parseInt(m[1], 10) + 1);
+    });
+}
+
+function getCustomTargetsState() {
+    return customTargets.map(t => ({
+        id: t.id,
+        name: t.name,
+        survey: t.survey,
+        layerName: t.layerName,
+        baseLocal: { x: t.baseLocal.x, y: t.baseLocal.y, z: t.baseLocal.z },
+        offsetEastM: t.offsetEastM,
+        offsetNorthM: t.offsetNorthM,
+        visible: t.visible,
+        color: t.color,
+        size: t.size,
+        opacity: t.opacity,
+    }));
+}
+
+function persistCustomTargetsToStorage() {
+    try {
+        localStorage.setItem(CUSTOM_TARGETS_STORAGE_KEY, JSON.stringify(getCustomTargetsState()));
+    } catch (e) {}
+}
+
+function findHorizonMeshForTarget(target) {
+    const surveyGroup = getSurveyGroupByName(target.survey);
+    if (!surveyGroup) return null;
+    return surveyGroup.children.find(c =>
+        c instanceof THREE.Mesh &&
+        c.userData.isHorizon &&
+        c.userData.layerName === target.layerName
+    ) || null;
+}
+
+function resolveCustomTargetWorldPosition(target) {
+    const surveyGroup = getSurveyGroupByName(target.survey);
+    if (!surveyGroup) return null;
+
+    const candidateLocal = new THREE.Vector3(
+        target.baseLocal.x + target.offsetEastM,
+        target.baseLocal.y,
+        target.baseLocal.z - target.offsetNorthM // +North should move toward -Z in this scene
+    );
+    const horizonMesh = findHorizonMeshForTarget(target);
+    if (!horizonMesh) return surveyGroup.localToWorld(candidateLocal.clone());
+
+    const candidateWorld = surveyGroup.localToWorld(candidateLocal.clone());
+    const rayOrigin = new THREE.Vector3(candidateWorld.x, candidateWorld.y + 250000, candidateWorld.z);
+    const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0), 0, 500000);
+    const hits = raycaster.intersectObject(horizonMesh, false);
+
+    if (hits.length > 0) return hits[0].point.clone();
+    return candidateWorld;
+}
+
+function clearCustomTargetMeshes() {
+    while (customTargetGroup.children.length > 0) {
+        const obj = customTargetGroup.children[0];
+        customTargetGroup.remove(obj);
+        obj.geometry?.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+        else obj.material?.dispose();
+    }
+}
+
+function rebuildCustomTargets() {
+    clearCustomTargetMeshes();
+
+    if (customTargets.length === 0) return;
+
+    customTargets.forEach(target => {
+        if (target.visible === false) return;
+        const worldPos = resolveCustomTargetWorldPosition(target);
+        if (!worldPos) return;
+        const size = Math.max(2, Number(target.size) || Number(params.customTargetSize) || 75);
+        const color = new THREE.Color(target.color || params.customTargetColor);
+        const opacity = Math.max(0.05, Math.min(1, Number(target.opacity) || Number(params.customTargetOpacity) || 0.65));
+        const ringTubeRadius = Math.max(0.5, size * 0.02);
+
+        const orbGeo = new THREE.SphereGeometry(size, 16, 16);
+        const orbMat = new THREE.MeshPhongMaterial({
+            color,
+            emissive: color.clone().multiplyScalar(0.15),
+            transparent: true,
+            opacity,
+            depthWrite: true,
+            side: THREE.DoubleSide,
+            shininess: 80,
+        });
+        const orb = new THREE.Mesh(orbGeo, orbMat);
+        orb.position.copy(worldPos);
+        orb.userData = { isCustomTarget: true, targetName: target.name };
+        orb.name = `custom-target-${target.name}`;
+        customTargetGroup.add(orb);
+
+        const ringGeo = new THREE.TorusGeometry(size * 1.625, ringTubeRadius, 12, 48);
+        const ringMat = new THREE.MeshPhongMaterial({
+            color,
+            emissive: color.clone().multiplyScalar(0.15),
+            transparent: true,
+            opacity: Math.min(1, opacity * 1.5),
+            depthWrite: true,
+            side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.position.copy(worldPos);
+        ring.rotation.x = Math.PI / 2;
+        ring.userData = { isCustomTarget: true, targetName: target.name };
+        customTargetGroup.add(ring);
+    });
+}
+
+function removeCustomTargetById(targetId) {
+    const idx = customTargets.findIndex(t => t.id === targetId);
+    if (idx < 0) return;
+    customTargets.splice(idx, 1);
+    rebuildCustomTargetSerial();
+    rebuildCustomTargets();
+    rebuildCustomTargetControllers();
+    persistCustomTargetsToStorage();
+}
+
+function rebuildCustomTargetControllers() {
+    if (!customTargetFolder) return;
+
+    customTargetRowFolders.forEach(folder => folder.destroy());
+    customTargetRowFolders = [];
+    if (customTargetDeleteAllCtrl) {
+        customTargetDeleteAllCtrl.destroy();
+        customTargetDeleteAllCtrl = null;
+    }
+
+    if (customTargets.length > 0) {
+        customTargetDeleteAllCtrl = customTargetFolder.add(customTargetUi, 'deleteAll').name('Delete All Targets');
+    }
+
+    customTargets.forEach(target => {
+        const rowFolder = customTargetFolder.addFolder(target.name);
+        _trackFolder(rowFolder, `custom-target:${target.id}`);
+        rowFolder.add(target, 'visible').name('Visible').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        rowFolder.addColor(target, 'color').name('Color').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        rowFolder.add(target, 'size', 5, 200, 1).name('Size (m)').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        rowFolder.add(target, 'opacity', 0.05, 1, 0.05).name('Opacity').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        rowFolder.add(target, 'offsetEastM', -5000, 5000, 1).name('East/West (m)').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        rowFolder.add(target, 'offsetNorthM', -5000, 5000, 1).name('North/South (m)').onChange(() => {
+            rebuildCustomTargets();
+            persistCustomTargetsToStorage();
+        });
+        const rowActions = {
+            deleteTarget: () => removeCustomTargetById(target.id),
+        };
+        rowFolder.add(rowActions, 'deleteTarget').name('Delete');
+        customTargetRowFolders.push(rowFolder);
+    });
+}
+
+function addCustomTargetFromIntersection(intersection) {
+    const mesh = intersection.object;
+    if (!(mesh instanceof THREE.Mesh) || !mesh.userData.isHorizon) return;
+    const survey = mesh.userData.survey;
+    const layerName = mesh.userData.layerName;
+    const surveyGroup = getSurveyGroupByName(survey);
+    if (!surveyGroup) return;
+
+    const localPos = surveyGroup.worldToLocal(intersection.point.clone());
+    const target = {
+        id: `ct_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+        name: nextCustomTargetName(),
+        survey,
+        layerName,
+        baseLocal: { x: localPos.x, y: localPos.y, z: localPos.z },
+        offsetEastM: 0,
+        offsetNorthM: 0,
+        visible: true,
+        color: params.customTargetColor,
+        size: params.customTargetSize,
+        opacity: params.customTargetOpacity,
+    };
+    customTargets.push(target);
+    rebuildCustomTargets();
+    rebuildCustomTargetControllers();
+    persistCustomTargetsToStorage();
+}
+
+function clearAllCustomTargets() {
+    customTargets.length = 0;
+    rebuildCustomTargetSerial();
+    rebuildCustomTargets();
+    rebuildCustomTargetControllers();
+    persistCustomTargetsToStorage();
+}
+
+function setCustomTargetsFromData(targets, options = {}) {
+    const persist = options.persist === true;
+    customTargets.length = 0;
+    if (Array.isArray(targets)) {
+        targets.forEach((raw, i) => {
+            if (!raw || !raw.baseLocal) return;
+            if ((raw.survey !== 'norne' && raw.survey !== 'volve') || !raw.layerName) return;
+
+            const safeName = typeof raw.name === 'string' && raw.name.trim()
+                ? raw.name.trim()
+                : `Target ${i + 1}`;
+            let uniqueName = safeName;
+            let suffix = 2;
+            while (customTargets.some(t => t.name === uniqueName)) {
+                uniqueName = `${safeName} (${suffix++})`;
+            }
+            customTargets.push({
+                id: typeof raw.id === 'string' && raw.id ? raw.id : `ct_${Date.now()}_${i}`,
+                name: uniqueName,
+                survey: raw.survey,
+                layerName: raw.layerName,
+                baseLocal: {
+                    x: Number(raw.baseLocal.x) || 0,
+                    y: Number(raw.baseLocal.y) || 0,
+                    z: Number(raw.baseLocal.z) || 0,
+                },
+                offsetEastM: Number(raw.offsetEastM) || 0,
+                offsetNorthM: Number(raw.offsetNorthM) || 0,
+                visible: raw.visible !== false,
+                color: typeof raw.color === 'string' && raw.color ? raw.color : params.customTargetColor,
+                size: Number(raw.size) > 0 ? Number(raw.size) : params.customTargetSize,
+                opacity: Number(raw.opacity) > 0 ? Number(raw.opacity) : params.customTargetOpacity,
+            });
+        });
+    }
+    rebuildCustomTargetSerial();
+    rebuildCustomTargets();
+    rebuildCustomTargetControllers();
+    if (persist) persistCustomTargetsToStorage();
+}
+
+function loadCustomTargetsFromStorage() {
+    const raw = localStorage.getItem(CUSTOM_TARGETS_STORAGE_KEY);
+    if (!raw) {
+        setCustomTargetsFromData([]);
+        return;
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        setCustomTargetsFromData(parsed);
+    } catch (e) {
+        setCustomTargetsFromData([]);
     }
 }
 
@@ -1173,6 +1662,7 @@ document.querySelector('#ui-container h1').addEventListener('click', hideAllUI);
 // ... Rest of script ...
 const PARAMS_STORAGE_KEY = 'geo_viewer_params';
 const PANEL_STATE_KEY   = 'geo_viewer_panel_state';
+const CUSTOM_TARGETS_STORAGE_KEY = 'geo_custom_horizon_targets';
 
 // ── Panel open/close persistence ─────────────────────────────────────────────
 // Call after each addFolder() to (a) restore its prior open/closed state from
@@ -1225,6 +1715,7 @@ const _paramsDefaults = {
     headlampIntensity: 2.835,
     hemiIntensity: 0.74,
     lightingEnabled: true,
+    backgroundColor: '#111111',
 
     faultColorMode: 'uniform',
     faultSingleColor: '#bafdef',
@@ -1250,6 +1741,11 @@ const _paramsDefaults = {
     // Seismic crossline panel
     seismicPanelVisible: false,
     seismicPanelOpacity: 0.8,
+    // Crossline transparent pane
+    crosslinePaneVisible: false,
+    crosslinePaneOpacity: 0.25,
+    crosslinePaneColor: '#4a90d9',
+    crosslinePosition: -0.17,            // position along long axis (-0.5 to 0.5)
     // ── Survey position offset ───────────────────────────────────────────────
     surveyOffsetEastKm: -24,
     surveyOffsetNorthKm: 0,
@@ -1275,12 +1771,19 @@ const _paramsDefaults = {
     wellPathStyle: 'tube',
     wellDotSize: 4,
     wellDotSpacing: 40,
+    wellheadConeVisible: true,
+    wellheadConeColor: '#ffffff',
+    wellheadConeScale: 1.0,
     wellShowTargets: true,
     showLat1Targets: true,
     showLat2Targets: true,
     wellTargetColor: '#cefd86',
     wellTargetSize: 75,
     wellTargetOpacity: 0.55,
+    customTargetAddOnClick: true,
+    customTargetColor: '#ffd166',
+    customTargetSize: 75,
+    customTargetOpacity: 0.65,
     wellOffsetEastKm: -15,
     wellOffsetNorthKm: -16.5,
     wellRotationDeg: 14,
@@ -1288,6 +1791,11 @@ const _paramsDefaults = {
     wellDepthOffsetM: -920,
     lat2RotationDeg: -29,
     lat1LP1Position: 4.8,
+    lat1BHLPosition: 5,
+    lat2LP2Position: 4,
+    targetLP1YOffset: 0,   // Y offset in metres (positive = up/shallower)
+    targetBHLYOffset: 0,
+    targetLP2YOffset: 0,
 
     // ── Surface Grid ─────────────────────────────────────────────────────────
     surfaceGridVisible: true,
@@ -1299,6 +1807,10 @@ const _paramsDefaults = {
     showHorizonDots: true,            // show point cloud overlay (independent of solid mesh)
     horizonDotSize: 8,                 // dot radius in scene metres
     horizonDotSkip: 1,                 // render every Nth vertex (1 = all)
+    // ── 3D Dot Mode (fill between horizons) ──────────────────────────────────
+    show3DDots: false,                  // fill dots between adjacent visible horizons
+    threeDDotSize: 8,                   // sphere radius in scene metres
+    threeDDotDensity: 1,                // vertical density multiplier (1 = grid spacing)
 };
 
 // Default layer overrides for specific layers (applied when no localStorage exists)
@@ -1344,6 +1856,7 @@ faultFolder.close();
 let horizonBBox   = null;  // Norne: THREE.LineSegments auto-fitted to horizon footprint
 let volveBBox     = null;  // Volve: THREE.LineSegments
 let seismicPanel  = null;  // THREE.Mesh textured seismic crossline plane
+let crosslinePane = null;  // THREE.Mesh transparent colored crossline pane
 let _obbState     = null;  // cached OBB geometry params shared by bbox + seismic panel
 
 // Generic: build an OBB fitted to a single survey group's horizons
@@ -1413,7 +1926,7 @@ function buildSurveyBBox(surveyGroup) {
     bbox.rotation.y = Math.atan2(-az, ax);
     bbox.userData.isHorizonBBox = true;
     surveyGroup.add(bbox);
-    return { bbox, oCtrX, oCtrY, oCtrZ, rotY: Math.atan2(-az, ax), widthA, widthB, boxHeight };
+    return { bbox, oCtrX, oCtrY, oCtrZ, rotY: Math.atan2(-az, ax), widthA, widthB, boxHeight, ax, az, cx, cz, minA, maxA, minB, maxB };
 }
 
 function buildHorizonBBox() {
@@ -1430,6 +1943,7 @@ function buildHorizonBBox() {
         horizonBBox.visible = params.norneBBoxVisible;
         _obbState = norneResult;
         buildSeismicPanel();
+        refitNorneUVsToOBB();
     }
 
     // Volve bbox
@@ -1446,6 +1960,64 @@ function buildHorizonBBox() {
     }
 }
 
+// ── Refit Norne horizon UVs to OBB ──────────────────────────────────────────
+// Projects each vertex onto the OBB primary (A) and secondary (B) axes and
+// maps to 0→1 preserving the texture image aspect ratio.
+// The image is rotated 90° so its long side matches the OBB long axis, then
+// "cover" fitted (scaled up to fully cover the OBB, centred).
+function refitNorneUVsToOBB() {
+    if (!_obbState) return;
+    const { ax, az, cx, cz, minA, maxA, minB, maxB } = _obbState;
+    const bx = -az, bz = ax;
+    const rangeA = maxA - minA || 1;
+    const rangeB = maxB - minB || 1;
+
+    // Image dimensions rotated 90°: long side (2166) → A axis, short side (1488) → B axis
+    const imgW = 2166, imgH = 1488;
+    const imgAR = imgW / imgH;       // rotated image aspect ratio
+    const obbAR = rangeA / rangeB;   // OBB aspect ratio in world units
+
+    // "Cover" fit: scale image to fully cover the OBB, preserving aspect ratio
+    let fitA, fitB;
+    if (obbAR > imgAR) {
+        // OBB is wider — image must stretch to fill A axis
+        fitA = rangeA;
+        fitB = rangeA / imgAR;
+    } else {
+        // OBB is taller — image must stretch to fill B axis
+        fitB = rangeB;
+        fitA = rangeB * imgAR;
+    }
+    // Centre offsets (may be negative when image overflows OBB)
+    const offsetA = (rangeA - fitA) * 0.5;
+    const offsetB = (rangeB - fitB) * 0.5;
+
+    norneSurveyGroup.children.forEach(mesh => {
+        if (!mesh.userData.isHorizon || mesh.userData.isContour) return;
+        if (!(mesh instanceof THREE.Mesh)) return;
+        if (mesh.userData.isHorizonDots) return;
+
+        const pos = mesh.geometry.attributes.position;
+        const uvAttr = mesh.geometry.attributes.uv;
+        if (!uvAttr) return;
+
+        for (let i = 0; i < pos.count; i++) {
+            const vx = pos.getX(i);
+            const vz = pos.getZ(i);
+            // Project onto OBB axes relative to centroid
+            const dx = vx - cx, dz = vz - cz;
+            const projA = dx * ax + dz * az;
+            const projB = dx * bx + dz * bz;
+            // Normalise to 0→1 within aspect-corrected, centred region
+            // Swap U/V to rotate the image 90°: A-axis → V, B-axis → U
+            const u = (projB - minB - offsetB) / fitB;
+            const v = (projA - minA - offsetA) / fitA;
+            uvAttr.setXY(i, u, v);
+        }
+        uvAttr.needsUpdate = true;
+    });
+}
+
 // ── Seismic crossline panel ───────────────────────────────────────────────────
 // Vertical plane spanning the full length × height of the OBB, textured with
 // the user-provided seismic section image. Shares the OBB rotation.
@@ -1459,7 +2031,12 @@ function buildSeismicPanel() {
     }
     if (!_obbState) return;
 
-    const { oCtrX, oCtrY, oCtrZ, rotY, widthB, boxHeight } = _obbState;
+    const { oCtrX, oCtrY, oCtrZ, rotY, widthA, widthB, boxHeight, ax, az } = _obbState;
+
+    // Position along the long (A) axis using the slider param
+    const posT = params.crosslinePosition;
+    const eastX = oCtrX + (widthA * posT) * ax;
+    const eastZ = oCtrZ + (widthA * posT) * az;
 
     const geo = new THREE.PlaneGeometry(widthB, boxHeight); // crossline = short axis
     const mat = new THREE.MeshBasicMaterial({
@@ -1470,11 +2047,44 @@ function buildSeismicPanel() {
         depthWrite:  true,   // write depth so panel occludes topology lines behind it
     });
     seismicPanel = new THREE.Mesh(geo, mat);
-    seismicPanel.position.set(oCtrX, oCtrY, oCtrZ);
+    seismicPanel.position.set(eastX, oCtrY, eastZ);
     seismicPanel.rotation.y = rotY + Math.PI / 2; // perpendicular to long axis = crossline
     seismicPanel.visible = params.seismicPanelVisible;
     seismicPanel.userData.isSeismicPanel = true;
     norneSurveyGroup.add(seismicPanel);
+
+    // ── Transparent coloured pane (same geometry/position) ──
+    if (crosslinePane) {
+        norneSurveyGroup.remove(crosslinePane);
+        crosslinePane.geometry.dispose();
+        crosslinePane.material.dispose();
+        crosslinePane = null;
+    }
+    const paneGeo = new THREE.PlaneGeometry(widthB, boxHeight);
+    const paneMat = new THREE.MeshBasicMaterial({
+        color:       params.crosslinePaneColor,
+        side:        THREE.DoubleSide,
+        transparent: true,
+        opacity:     params.crosslinePaneOpacity,
+        depthWrite:  false,
+    });
+    crosslinePane = new THREE.Mesh(paneGeo, paneMat);
+    crosslinePane.position.set(eastX, oCtrY, eastZ);
+    crosslinePane.rotation.y = rotY + Math.PI / 2;
+    crosslinePane.visible = params.crosslinePaneVisible;
+    crosslinePane.userData.isSeismicPanel = true;
+    norneSurveyGroup.add(crosslinePane);
+}
+
+// Reposition both crossline meshes without rebuilding geometry
+function updateCrosslinePosition() {
+    if (!_obbState) return;
+    const { oCtrX, oCtrZ, widthA, ax, az } = _obbState;
+    const posT = params.crosslinePosition;
+    const px = oCtrX + (widthA * posT) * ax;
+    const pz = oCtrZ + (widthA * posT) * az;
+    if (seismicPanel)  { seismicPanel.position.x  = px; seismicPanel.position.z  = pz; }
+    if (crosslinePane) { crosslinePane.position.x = px; crosslinePane.position.z = pz; }
 }
 
 
@@ -1515,6 +2125,7 @@ function applyHorizonDepthExag(exag) {
 
     // Step 5: rebuild bbox so it reflects new extents
     buildHorizonBBox();
+    rebuildCustomTargets();
 }
 
 // Helper to add Horizons panel controls for bbox and depth exaggeration.
@@ -1531,6 +2142,16 @@ function addHorizonPanelControls() {
         .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
     depthExagFolder.add(params, 'seismicPanelOpacity', 0.0, 1.0, 0.01).name('Panel Opacity')
         .onChange(v => { if (seismicPanel) { seismicPanel.material.opacity = v; seismicPanel.material.needsUpdate = true; } });
+    depthExagFolder.add(params, 'crosslinePosition', -0.5, 0.5, 0.01).name('Crossline Position')
+        .onChange(() => updateCrosslinePosition());
+
+    // Crossline transparent pane controls
+    depthExagFolder.add(params, 'crosslinePaneVisible').name('Crossline Pane')
+        .onChange(v => { if (crosslinePane) crosslinePane.visible = v; });
+    depthExagFolder.add(params, 'crosslinePaneOpacity', 0.0, 1.0, 0.01).name('Pane Opacity')
+        .onChange(v => { if (crosslinePane) { crosslinePane.material.opacity = v; crosslinePane.material.needsUpdate = true; } });
+    depthExagFolder.addColor(params, 'crosslinePaneColor').name('Pane Color')
+        .onChange(v => { if (crosslinePane) { crosslinePane.material.color.set(v); crosslinePane.material.needsUpdate = true; } });
 }
 
 
@@ -1663,8 +2284,10 @@ function initLayerControls(layers) {
                 } else {
                     c.visible = _ls.visible;
                     if (!c.userData.isHorizonDots) {
-                        c.material.transparent = true;
                         c.material.opacity = _ls.opacity;
+                        c.material.transparent = _ls.opacity < 1;
+                        c.material.depthWrite = _ls.opacity >= 1;
+                        c.material.needsUpdate = true;
                     }
                 }
             }
@@ -1679,13 +2302,17 @@ function initLayerControls(layers) {
                     else { c.visible = v; }
                 }
             });
+            // Rebuild 3D dots when horizon visibility changes (pairs depend on which horizons are visible)
+            if (params.show3DDots) rebuild3DDots();
             try { localStorage.setItem('geo_layer_' + h.name, JSON.stringify(layerState[h.name])); } catch(e) {}
         });
 
         folder.add(layerState[h.name], 'opacity', 0, 1).onChange(v => {
             allSurveyChildren().forEach(c => {
                 if (c.userData.layerName === h.name && !c.userData.isHorizonDots) {
-                    c.material.transparent = true; c.material.opacity = v;
+                    c.material.opacity = v;
+                    c.material.transparent = v < 1;
+                    c.material.depthWrite = v >= 1;
                     c.material.needsUpdate = true;
                 }
             });
@@ -1822,16 +2449,24 @@ function applyState(state) {
                     c.visible = s.visible && params.showContours;
                 } else if (c.userData.isHorizonDots) {
                     c.visible = s.visible && params.showHorizonDots;
+                } else if (c.userData.isThreeDDots) {
+                    c.visible = params.show3DDots;  // 3D dots visibility is global, not per-layer
                 } else if (c.userData.isHorizon) {
                     c.visible = s.visible;
                     if (!c.userData.isHorizonDots) {
-                        c.material.transparent = true;
-                        if (s.opacity !== undefined) c.material.opacity = s.opacity;
+                        const op = s.opacity !== undefined ? s.opacity : 1;
+                        c.material.opacity = op;
+                        c.material.transparent = op < 1;
+                        c.material.depthWrite = op >= 1;
+                        c.material.needsUpdate = true;
                     }
                 } else {
                     c.visible = s.visible;
-                    c.material.transparent = true;
-                    if (s.opacity !== undefined) c.material.opacity = s.opacity;
+                    const op = s.opacity !== undefined ? s.opacity : 1;
+                    c.material.opacity = op;
+                    c.material.transparent = op < 1;
+                    c.material.depthWrite = op >= 1;
+                    c.material.needsUpdate = true;
                 }
             }
         });
@@ -1875,7 +2510,7 @@ function applyState(state) {
 
     // Model Transform
     allSurveyChildren().forEach(c => {
-        if (!c.userData.isContour && !c.userData.isRegionalContour) {
+        if (!c.userData.isContour && !c.userData.isRegionalContour && !c.userData.isHorizonBBox) {
             c.material.wireframe = params.wireframe;
             c.material.depthWrite = !params.wireframe;
         }
@@ -1925,6 +2560,12 @@ function applyState(state) {
         seismicPanel.visible = params.seismicPanelVisible;
         seismicPanel.material.opacity = params.seismicPanelOpacity;
         seismicPanel.material.needsUpdate = true;
+    }
+    if (crosslinePane) {
+        crosslinePane.visible = params.crosslinePaneVisible;
+        crosslinePane.material.opacity = params.crosslinePaneOpacity;
+        crosslinePane.material.color.set(params.crosslinePaneColor);
+        crosslinePane.material.needsUpdate = true;
     }
 
     // Survey group positions (Norne + Volve)
@@ -2285,6 +2926,7 @@ async function loadRegionalHorizon() {
     });
 
     regionalMesh = new THREE.Mesh(geo, mat);
+    regionalMesh.visible = params.regionalVisible && params.regionalOpacity > 0;
     regionalMesh.userData.isRegional = true;
     regionalMesh.userData.layerName = 'Norne Base';
     regionalMesh.userData.gridW        = W;
@@ -2531,39 +3173,49 @@ function updateColoring() {
         m.userData.isHorizonBBox ||
         m.userData.isSeismicPanel ||
         m.userData.isHorizonDots ||
+        m.userData.isThreeDDots ||
         !(m instanceof THREE.Mesh)
     );
 
-    const usingSemMap = params.selectedColormap === 'SEM Map';
+    const usingSemMap  = params.selectedColormap === 'SEM Map';
+    const usingSpecD   = params.selectedColormap === 'Spec-D';
+    const usingTexture = usingSemMap || usingSpecD;
 
-    // ── First, clear any SEM texture from ALL meshes (in case we're switching away) ──
+    // ── First, clear any per-layer texture from ALL meshes (in case we're switching away) ──
     allSurveyChildren().forEach(mesh => {
         if (skip(mesh)) return;
-        if (mesh.material.map === semMapTexture) {
-            mesh.material.map = null;
-            mesh.material.needsUpdate = true;
+        if (mesh.material.map) {
+            // Only clear textures we manage (SEM or SpecD)
+            const textureKey = getMeshTextureKey(mesh);
+            if (semMapTextures[textureKey] === mesh.material.map ||
+                specDTextures[textureKey] === mesh.material.map) {
+                mesh.material.map = null;
+                mesh.material.needsUpdate = true;
+            }
         }
     });
 
-    if (usingSemMap && params.colorByDepth) {
-        // ── SEM Map mode: apply texture to Norne horizons, depth-colour the rest ──
-        const isNorne = m => m.parent === norneSurveyGroup;
+    if (usingTexture && params.colorByDepth) {
+        // ── Texture mode: apply per-layer texture to any mapped survey horizon, depth-colour the rest ──
+        const texMap = usingSpecD ? specDTextures : semMapTextures;
 
-        // Apply SEM texture to Norne horizon meshes
+        // Apply per-layer texture to mapped horizon meshes
         allSurveyChildren().forEach(mesh => {
             if (skip(mesh)) return;
-            if (isNorne(mesh) && mesh.userData.isHorizon) {
+            if (!mesh.userData.isHorizon) return;
+            const tex = texMap[getMeshTextureKey(mesh)];
+            if (tex) {
                 mesh.material.vertexColors = false;
-                mesh.material.map = semMapTexture;
+                mesh.material.map = tex;
                 mesh.material.color.set(0xffffff);
                 mesh.material.needsUpdate = true;
             }
         });
 
-        // Depth-colour non-Norne meshes with fallback colormap
+        // Depth-colour non-textured meshes with fallback colormap
         let minZ = Infinity, maxZ = -Infinity;
         allSurveyChildren().forEach(mesh => {
-            if (skip(mesh) || isNorne(mesh)) return;
+            if (skip(mesh) || texMap[getMeshTextureKey(mesh)]) return;
             const pos = mesh.geometry.attributes.position;
             for (let i = 0; i < pos.count; i++) {
                 const y = pos.getY(i);
@@ -2572,7 +3224,7 @@ function updateColoring() {
         });
         const range = maxZ - minZ || 1;
         allSurveyChildren().forEach(mesh => {
-            if (skip(mesh) || isNorne(mesh)) return;
+            if (skip(mesh) || texMap[getMeshTextureKey(mesh)]) return;
             const pos = mesh.geometry.attributes.position;
             const count = pos.count;
             const colors = new Float32Array(count * 3);
@@ -2655,6 +3307,11 @@ function updateColoring() {
     if (params.showHorizonDots) {
         const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
         if (hasDots) rebuildHorizonDots();
+    }
+    // Refresh 3D dots too
+    if (params.show3DDots) {
+        const has3D = allSurveyChildren().some(c => c.userData.isThreeDDots);
+        if (has3D) rebuild3DDots();
     }
 }
 
@@ -2741,17 +3398,21 @@ function rebuildHorizonDots() {
         }
         instanced.instanceMatrix.needsUpdate = true;
 
-        // Colour dots — SEM map sampling for Norne meshes, or vertex colors for depth
-        const useSemMap = params.selectedColormap === 'SEM Map'
+        // Colour dots — per-layer texture sampling for mapped survey meshes, or vertex colors for depth
+        const isSemDots  = params.selectedColormap === 'SEM Map';
+        const isSpecDots = params.selectedColormap === 'Spec-D';
+        const canvasMap = isSemDots ? semMapCanvases : isSpecDots ? specDCanvases : null;
+        const layerCanvas = canvasMap ? canvasMap[getMeshTextureKey(mesh)] : null;
+        const useTextureDots = (isSemDots || isSpecDots)
             && params.colorByDepth
-            && mesh.parent === norneSurveyGroup
-            && semMapCtx;
+            && layerCanvas;
 
-        if (useSemMap) {
-            // Sample SEM map image at each vertex's UV coordinate
+        if (useTextureDots) {
+            // Sample per-layer texture image at each vertex's UV coordinate
             const uvAttr = mesh.geometry.attributes.uv;
             const instanceColor = new THREE.Color();
-            const w = semMapCanvas.width, h = semMapCanvas.height;
+            const { canvas: texCanvas, ctx: texCtx } = layerCanvas;
+            const w = texCanvas.width, h = texCanvas.height;
             for (let d = 0; d < dotCount; d++) {
                 const srcIdx = vertexIndices[d];
                 if (uvAttr && srcIdx < uvAttr.count) {
@@ -2760,7 +3421,7 @@ function rebuildHorizonDots() {
                     // UV (0,0) = bottom-left in Three.js; canvas (0,0) = top-left
                     const px = Math.min(Math.floor(u * w), w - 1);
                     const py = Math.min(Math.floor((1 - v) * h), h - 1);
-                    const pixel = semMapCtx.getImageData(px, py, 1, 1).data;
+                    const pixel = texCtx.getImageData(px, py, 1, 1).data;
                     instanceColor.setRGB(pixel[0] / 255, pixel[1] / 255, pixel[2] / 255);
                     instanced.setColorAt(d, instanceColor);
                 }
@@ -2816,6 +3477,237 @@ function toggleHorizonDots(show) {
     }
 }
 
+// ── 3D Dot Mode ────────────────────────────────────────────────────────────
+// Fills vertical dot columns between adjacent visible horizons on the same
+// survey, using the same grid spacing as the normalised horizons.
+
+function rebuild3DDots() {
+    // 1. Remove any existing 3D dot meshes
+    allSurveyChildren().forEach(c => {
+        if (c.userData.isThreeDDots) {
+            c.geometry.dispose();
+            c.material.dispose();
+            c.parent.remove(c);
+        }
+    });
+
+    const dotGeo = new THREE.SphereGeometry(params.threeDDotSize, 6, 6);
+    const dummy = new THREE.Object3D();
+    const yCompensation = 1 / (params.zScale || 1);
+
+    // Process each survey group independently
+    [norneSurveyGroup, volveSurveyGroup].forEach(group => {
+        // Collect visible horizon meshes in this survey
+        const horizons = [];
+        group.children.forEach(c => {
+            if (!c.userData.isHorizon || c.userData.isContour ||
+                c.userData.isHorizonDots || c.userData.isThreeDDots) return;
+            const ls = layerState[c.userData.layerName];
+            if (ls && !ls.visible) return;
+            horizons.push(c);
+        });
+
+        if (horizons.length < 2) return;
+
+        // Sort by average Y (ascending — most negative = deepest first, so shallowest last)
+        horizons.sort((a, b) => {
+            const avgY = mesh => {
+                const pos = mesh.geometry.attributes.position;
+                let sum = 0, cnt = 0;
+                for (let i = 0; i < pos.count; i++) {
+                    const y = pos.getY(i);
+                    if (y !== 0) { sum += y; cnt++; }
+                }
+                return cnt > 0 ? sum / cnt : 0;
+            };
+            return avgY(b) - avgY(a);  // b-a so shallowest (highest Y) first
+        });
+
+        // Compute average horizontal grid cell spacing from the first horizon
+        const refMesh = horizons[0];
+        const refPos = refMesh.geometry.attributes.position;
+        let cellSpacingSum = 0, cellSpacingCnt = 0;
+        for (let i = 0; i < refPos.count - 1; i++) {
+            const x0 = refPos.getX(i), z0 = refPos.getZ(i);
+            const x1 = refPos.getX(i + 1), z1 = refPos.getZ(i + 1);
+            if (x0 === 0 && z0 === 0) continue;
+            if (x1 === 0 && z1 === 0) continue;
+            const dx = x1 - x0, dz = z1 - z0;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist > 0 && dist < 500) { // reasonable cell size
+                cellSpacingSum += dist;
+                cellSpacingCnt++;
+            }
+            if (cellSpacingCnt > 50) break; // enough samples
+        }
+        const gridSpacing = cellSpacingCnt > 0 ? cellSpacingSum / cellSpacingCnt : 50;
+        const vertSpacing = gridSpacing / Math.max(0.1, params.threeDDotDensity);
+
+        // For each consecutive pair of horizons
+        for (let hi = 0; hi < horizons.length - 1; hi++) {
+            const upper = horizons[hi];     // shallowest (higher Y)
+            const lower = horizons[hi + 1]; // deeper (lower Y)
+
+            const upperPos = upper.geometry.attributes.position;
+            const lowerPos = lower.geometry.attributes.position;
+
+            // Both horizons must share the same vertex count (same grid)
+            const vertCount = Math.min(upperPos.count, lowerPos.count);
+
+            // ── Determine color source for each horizon ──
+            // Texture modes (SEM Map / Spec-D): sample the per-layer offscreen canvas
+            // Depth coloring: use vertex color attribute
+            // Otherwise: use original horizon material color
+            const isSem  = params.selectedColormap === 'SEM Map';
+            const isSpec = params.selectedColormap === 'Spec-D';
+            const canvasMap = isSem ? semMapCanvases : isSpec ? specDCanvases : null;
+
+            const upperCanvas  = canvasMap ? canvasMap[getMeshTextureKey(upper)] : null;
+            const lowerCanvas  = canvasMap ? canvasMap[getMeshTextureKey(lower)] : null;
+            const useUpperTex  = (isSem || isSpec) && params.colorByDepth && upperCanvas;
+            const useLowerTex  = (isSem || isSpec) && params.colorByDepth && lowerCanvas;
+
+            const upperHasColors = upper.geometry.attributes.color;
+            const lowerHasColors = lower.geometry.attributes.color;
+            const upperUV = upper.geometry.attributes.uv;
+            const lowerUV = lower.geometry.attributes.uv;
+
+            // Original (non-white) horizon color for fallback
+            const upperOrigColor = new THREE.Color(upper.userData.originalColor || 0xffffff);
+            const lowerOrigColor = new THREE.Color(lower.userData.originalColor || 0xffffff);
+
+            // Gather all dot positions and colors
+            const positions = [];
+            const colors = [];
+            const tempColorUpper = new THREE.Color();
+            const tempColorLower = new THREE.Color();
+            const tempColorBlend = new THREE.Color();
+
+            // Helper: sample color from a canvas at UV coords
+            function sampleCanvas(canvasObj, uvAttr, vertIdx, outColor) {
+                if (!canvasObj || !uvAttr || vertIdx >= uvAttr.count) return false;
+                const { canvas: texCanvas, ctx: texCtx } = canvasObj;
+                const w = texCanvas.width, h = texCanvas.height;
+                const u = uvAttr.getX(vertIdx);
+                const v = uvAttr.getY(vertIdx);
+                const px = Math.min(Math.floor(u * w), w - 1);
+                const py = Math.min(Math.floor((1 - v) * h), h - 1);
+                const pixel = texCtx.getImageData(px, py, 1, 1).data;
+                outColor.setRGB(pixel[0] / 255, pixel[1] / 255, pixel[2] / 255);
+                return true;
+            }
+
+            for (let i = 0; i < vertCount; i++) {
+                const ux = upperPos.getX(i), uy = upperPos.getY(i), uz = upperPos.getZ(i);
+                const lx = lowerPos.getX(i), ly = lowerPos.getY(i), lz = lowerPos.getZ(i);
+
+                // Skip if either vertex is invalid (0,0,0)
+                if (ux === 0 && uy === 0 && uz === 0) continue;
+                if (lx === 0 && ly === 0 && lz === 0) continue;
+
+                // Use upper vertex's XZ position (horizons share the same grid)
+                const dotX = ux;
+                const dotZ = uz;
+
+                // Vertical range (upper.y > lower.y since upper is shallower)
+                const yTop = uy;
+                const yBot = ly;
+                if (yTop <= yBot) continue; // skip if upper isn't actually above lower here
+
+                const span = yTop - yBot;
+                const nSteps = Math.max(1, Math.round(span / vertSpacing));
+
+                // Get upper color — texture → vertex colors → original color
+                if (useUpperTex) {
+                    if (!sampleCanvas(upperCanvas, upperUV, i, tempColorUpper)) {
+                        tempColorUpper.copy(upperOrigColor);
+                    }
+                } else if (upperHasColors) {
+                    const ca = upperHasColors.array;
+                    tempColorUpper.setRGB(ca[i * 3], ca[i * 3 + 1], ca[i * 3 + 2]);
+                } else {
+                    tempColorUpper.copy(upperOrigColor);
+                }
+
+                // Get lower color — texture → vertex colors → original color
+                if (useLowerTex) {
+                    if (!sampleCanvas(lowerCanvas, lowerUV, i, tempColorLower)) {
+                        tempColorLower.copy(lowerOrigColor);
+                    }
+                } else if (lowerHasColors) {
+                    const ca = lowerHasColors.array;
+                    tempColorLower.setRGB(ca[i * 3], ca[i * 3 + 1], ca[i * 3 + 2]);
+                } else {
+                    tempColorLower.copy(lowerOrigColor);
+                }
+
+                // Generate dots between horizons (excluding the horizon surfaces themselves)
+                for (let s = 1; s < nSteps; s++) {
+                    const t = s / nSteps;
+                    const dotY = yTop + (yBot - yTop) * t;
+                    positions.push(dotX, dotY, dotZ);
+
+                    // Lerp color
+                    tempColorBlend.copy(tempColorUpper).lerp(tempColorLower, t);
+                    colors.push(tempColorBlend.r, tempColorBlend.g, tempColorBlend.b);
+                }
+            }
+
+            const dotCount = positions.length / 3;
+            if (dotCount === 0) continue;
+
+            // Create InstancedMesh
+            const dotMat = new THREE.MeshPhongMaterial({
+                color: 0xffffff,
+                shininess: 40,
+            });
+
+            const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
+            for (let d = 0; d < dotCount; d++) {
+                dummy.position.set(positions[d * 3], positions[d * 3 + 1], positions[d * 3 + 2]);
+                dummy.scale.set(1, yCompensation, 1);
+                dummy.updateMatrix();
+                instanced.setMatrixAt(d, dummy.matrix);
+            }
+            instanced.instanceMatrix.needsUpdate = true;
+
+            // Apply per-instance colors
+            const instanceColor = new THREE.Color();
+            for (let d = 0; d < dotCount; d++) {
+                instanceColor.setRGB(colors[d * 3], colors[d * 3 + 1], colors[d * 3 + 2]);
+                instanced.setColorAt(d, instanceColor);
+            }
+            if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
+
+            instanced.userData = {
+                isThreeDDots: true,
+                upperLayer: upper.userData.layerName,
+                lowerLayer: lower.userData.layerName,
+            };
+
+            instanced.visible = params.show3DDots;
+            group.add(instanced);
+        }
+    });
+
+    dotGeo.dispose();
+    console.log('3D dots rebuilt');
+}
+
+function toggle3DDots(show) {
+    allSurveyChildren().forEach(c => {
+        if (c.userData.isThreeDDots) {
+            c.visible = show;
+        }
+    });
+
+    // Build 3D dots on first enable (or if they were cleaned up)
+    if (show) {
+        const has3D = allSurveyChildren().some(c => c.userData.isThreeDDots);
+        if (!has3D) rebuild3DDots();
+    }
+}
+
 
 const vizFolder = gui.addFolder('Visualization');
 _trackFolder(vizFolder, 'Visualization');
@@ -2831,14 +3723,26 @@ vizFolder.add(params, 'horizonDotSkip', 1, 10, 1).name('Dot Skip').onChange(() =
     if (params.showHorizonDots) rebuildHorizonDots();
 });
 
+// 3D Dot Mode controls (fill between horizons)
+vizFolder.add(params, 'show3DDots').name('3D Dots').onChange(v => {
+    toggle3DDots(v);
+});
+vizFolder.add(params, 'threeDDotSize', 2, 30).name('3D Dot Size (m)').onChange(() => {
+    if (params.show3DDots) rebuild3DDots();
+});
+vizFolder.add(params, 'threeDDotDensity', 0.5, 4, 0.5).name('3D Dot Density').onChange(() => {
+    if (params.show3DDots) rebuild3DDots();
+});
+
 vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(v => {
     modelGroup.scale.y = v;
     buildWellTrajectories(); // re-counter-scale spheres
+    rebuildCustomTargets();
 });
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
     allSurveyChildren().forEach(c => {
-        if (!c.userData.isContour && !c.userData.isRegionalContour) {
+        if (!c.userData.isContour && !c.userData.isRegionalContour && !c.userData.isHorizonBBox) {
             c.material.wireframe = v;
             c.material.depthWrite = !v;
         }
@@ -2863,7 +3767,7 @@ depthFolder.add(params, 'depthColorPerLayer').name('Per-Layer Gradient').onChang
     if (params.colorByDepth) updateColoring();
 });
 
-depthFolder.add(params, 'selectedColormap', [...Object.keys(ColormapRegistry), 'SEM Map']).name('Colormap').onChange(() => {
+depthFolder.add(params, 'selectedColormap', [...Object.keys(ColormapRegistry), 'SEM Map', 'Spec-D']).name('Colormap').onChange(() => {
     if (params.colorByDepth) updateColoring();
 });
 
@@ -2935,6 +3839,11 @@ lightFolder.add(params, 'headlampIntensity', 0, 5).name('Headlamp').onChange(v =
 lightFolder.add(params, 'hemiIntensity', 0, 5).name('Sky Light').onChange(v => {
     hemiLight.intensity = v;
 });
+lightFolder.addColor(params, 'backgroundColor').name('Background').onChange(v => {
+    scene.background = new THREE.Color(v);
+});
+// Apply initial background colour from (possibly restored) params
+scene.background = new THREE.Color(params.backgroundColor);
 
 // ── Norne Survey Position ───────────────────────────────────────────────────
 const nornePosFolder = gui.addFolder('Norne Survey Position');
@@ -2947,6 +3856,7 @@ function applyNorneSurveyOffset() {
     norneSurveyGroup.scale.set(params.norneScale, params.norneScale, params.norneScale);
     recomputeFitBlend();
     if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
+    rebuildCustomTargets();
 }
 nornePosFolder.add(params, 'surveyOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyNorneSurveyOffset);
 nornePosFolder.add(params, 'surveyOffsetNorthKm', -20, 20, 0.5).name('North/South (km)').onChange(applyNorneSurveyOffset);
@@ -2970,6 +3880,7 @@ function applyVolveSurveyOffset() {
     volveSurveyGroup.scale.set(params.volveScale, params.volveScale, params.volveScale);
     recomputeFitBlend();
     if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
+    rebuildCustomTargets();
 }
 volvePosFolder.add(params, 'volveOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyVolveSurveyOffset);
 volvePosFolder.add(params, 'volveOffsetNorthKm', -25, 25, 0.5).name('North/South (km)').onChange(applyVolveSurveyOffset);
@@ -3013,6 +3924,11 @@ wellTrajFolder.add(params, 'wellPathStyle', ['tube', 'dots']).name('Path Style')
 wellTrajFolder.add(params, 'wellTubeRadius', 1, 30, 1).name('Tube Radius (m)').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'wellDotSize', 1, 15, 0.5).name('Dot Size (m)').onChange(() => buildWellTrajectories());
 wellTrajFolder.add(params, 'wellDotSpacing', 5, 100, 5).name('Dot Spacing (m)').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellheadConeVisible').name('Wellhead Cone').onChange(v => {
+    wellGroup.children.forEach(c => { if (c.userData.isWellheadCone) c.visible = v; });
+});
+wellTrajFolder.addColor(params, 'wellheadConeColor').name('Cone Color').onChange(() => buildWellTrajectories());
+wellTrajFolder.add(params, 'wellheadConeScale', 0.2, 5, 0.1).name('Cone Scale').onChange(() => buildWellTrajectories());
 
 const wellTargetFolder = wellFolder.addFolder('Targets');
 wellTargetFolder.add(params, 'wellShowTargets').name('Show All Targets').onChange(() => buildWellTrajectories());
@@ -3022,6 +3938,18 @@ wellTargetFolder.addColor(params, 'wellTargetColor').name('Color').onChange(() =
 wellTargetFolder.add(params, 'wellTargetSize', 10, 200, 5).name('Size (m)').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'wellTargetOpacity', 0.05, 0.8, 0.05).name('Opacity').onChange(() => buildWellTrajectories());
 wellTargetFolder.add(params, 'lat1LP1Position', 0, 5, 0.1).name('LP1 Position').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'targetLP1YOffset', -300, 300, 5).name('LP1 Y Offset (m)').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'lat1BHLPosition', 0, 5, 0.1).name('BHL Position').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'targetBHLYOffset', -300, 300, 5).name('BHL Y Offset (m)').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'lat2LP2Position', 0, 4, 0.1).name('LP2 Position').onChange(() => buildWellTrajectories());
+wellTargetFolder.add(params, 'targetLP2YOffset', -300, 300, 5).name('LP2 Y Offset (m)').onChange(() => buildWellTrajectories());
+
+customTargetFolder = wellTargetFolder.addFolder('Custom Horizon Targets');
+customTargetFolder.add(params, 'customTargetAddOnClick').name('Add On Horizon Click');
+customTargetFolder.addColor(params, 'customTargetColor').name('New Target Color');
+customTargetFolder.add(params, 'customTargetSize', 5, 200, 1).name('New Target Size (m)');
+customTargetFolder.add(params, 'customTargetOpacity', 0.05, 1.0, 0.05).name('New Target Opacity');
+loadCustomTargetsFromStorage();
 
 
 
@@ -3310,7 +4238,121 @@ async function initNorneData() {
             }
         }
 
+        // Compute typical edge length BEFORE smoothing (smoothing compresses
+        // boundary edges and would corrupt this measurement)
+        let edgeLenSum = 0, edgeLenCnt = 0;
+        for (let eix = 0; eix < width - 1; eix++) {
+            for (let eiy = 0; eiy < height; eiy++) {
+                const i0 = eiy * width + eix, i1 = eiy * width + (eix + 1);
+                if (!invalidIndices.has(i0) && !invalidIndices.has(i1)) {
+                    const edx = posAttr.getX(i1) - posAttr.getX(i0);
+                    const edz = posAttr.getZ(i1) - posAttr.getZ(i0);
+                    edgeLenSum += Math.sqrt(edx * edx + edz * edz);
+                    edgeLenCnt++;
+                    break;
+                }
+            }
+            if (edgeLenCnt > 10) break;
+        }
+        const avgEdge = edgeLenCnt > 0 ? edgeLenSum / edgeLenCnt : 50;
+        const maxEdgeLen = avgEdge * 3.0;
+
+        // ── Laplacian smoothing of boundary vertex XZ positions ─────────────
+        // The data footprint is rotated relative to the grid, so the boundary
+        // follows a staircase pattern.  Smooth boundary vertices toward their
+        // valid neighbours to create a clean, curved edge.
+        try {
+            const SMOOTH_ITERS = 5;
+            const LAMBDA = 0.5;
+            for (let iter = 0; iter < SMOOTH_ITERS; iter++) {
+                // 1. Identify current boundary vertices
+                const boundarySet = new Set();
+                for (let bix = 0; bix < width; bix++) {
+                    for (let biy = 0; biy < height; biy++) {
+                        const bIdx = biy * width + bix;
+                        if (invalidIndices.has(bIdx)) continue;
+                        const neighbours = [[-1,0],[1,0],[0,-1],[0,1]];
+                        for (let n = 0; n < neighbours.length; n++) {
+                            const nnx = bix + neighbours[n][0], nny = biy + neighbours[n][1];
+                            if (nnx < 0 || nnx >= width || nny < 0 || nny >= height ||
+                                invalidIndices.has(nny * width + nnx)) {
+                                boundarySet.add(bIdx);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Compute smoothed XZ for each boundary vertex
+                const smoothed = []; // [ {idx, x, z}, ... ]
+                boundarySet.forEach(function(bIdx) {
+                    const biy = Math.floor(bIdx / width);
+                    const bix = bIdx % width;
+                    var sumX = 0, sumZ = 0, cnt = 0;
+                    const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]];
+                    for (var d = 0; d < dirs.length; d++) {
+                        const nnx = bix + dirs[d][0], nny = biy + dirs[d][1];
+                        if (nnx < 0 || nnx >= width || nny < 0 || nny >= height) continue;
+                        const nIdx = nny * width + nnx;
+                        if (invalidIndices.has(nIdx)) continue;
+                        sumX += posAttr.getX(nIdx);
+                        sumZ += posAttr.getZ(nIdx);
+                        cnt++;
+                    }
+                    if (cnt > 0) {
+                        const curX = posAttr.getX(bIdx);
+                        const curZ = posAttr.getZ(bIdx);
+                        smoothed.push({
+                            idx: bIdx,
+                            x: curX + LAMBDA * (sumX / cnt - curX),
+                            z: curZ + LAMBDA * (sumZ / cnt - curZ),
+                        });
+                    }
+                });
+
+                // 3. Apply smoothed positions (Y/depth unchanged)
+                for (var s = 0; s < smoothed.length; s++) {
+                    const entry = smoothed[s];
+                    const curY = posAttr.getY(entry.idx);
+                    posAttr.setXYZ(entry.idx, entry.x, curY, entry.z);
+                }
+            }
+            console.log(`  Boundary smoothing: ${SMOOTH_ITERS} iters applied for ${h.name}`);
+        } catch(e) {
+            console.error('Boundary smoothing failed:', e);
+        }
+
         // Remove degenerate triangles (invalid vertices + spatially stretched edges)
+
+        // ── Remap UVs so the texture spans only the valid footprint ──
+        // Default PlaneGeometry UVs cover the full grid (0→1). We remap to span
+        // only the bounding box of valid (post-erosion) grid cells so the image
+        // fills the actual horizon footprint instead of the larger rectangular grid.
+        {
+            const uvAttr = geometry.attributes.uv;
+            let minIx = width, maxIx = -1, minIy = height, maxIy = -1;
+            for (let ix = 0; ix < width; ix++) {
+                for (let iy = 0; iy < height; iy++) {
+                    if (!invalidIndices.has(iy * width + ix)) {
+                        if (ix < minIx) minIx = ix;
+                        if (ix > maxIx) maxIx = ix;
+                        if (iy < minIy) minIy = iy;
+                        if (iy > maxIy) maxIy = iy;
+                    }
+                }
+            }
+            const rangeIx = maxIx - minIx || 1;
+            const rangeIy = maxIy - minIy || 1;
+            for (let ix = 0; ix < width; ix++) {
+                for (let iy = 0; iy < height; iy++) {
+                    const idx = iy * width + ix;
+                    const u = (ix - minIx) / rangeIx;
+                    const v = (iy - minIy) / rangeIy;
+                    uvAttr.setXY(idx, u, v);
+                }
+            }
+            uvAttr.needsUpdate = true;
+        }
         const rawIndices = geometry.index.array;
         let cleanIndices = [];
         for (let i = 0; i < rawIndices.length; i += 3) {
@@ -3320,24 +4362,7 @@ async function initNorneData() {
             }
         }
 
-        // Compute typical edge length from valid adjacent vertices to set threshold
-        // Use XZ (horizontal) distance — ignore Y (depth) which varies naturally
-        let edgeLenSum = 0, edgeLenCnt = 0;
-        for (let ix = 0; ix < width - 1; ix++) {
-            for (let iy = 0; iy < height; iy++) {
-                const i0 = iy * width + ix, i1 = iy * width + (ix + 1);
-                if (!invalidIndices.has(i0) && !invalidIndices.has(i1)) {
-                    const dx = posAttr.getX(i1) - posAttr.getX(i0);
-                    const dz = posAttr.getZ(i1) - posAttr.getZ(i0);
-                    edgeLenSum += Math.sqrt(dx * dx + dz * dz);
-                    edgeLenCnt++;
-                    break;  // one sample per column is enough
-                }
-            }
-            if (edgeLenCnt > 10) break;
-        }
-        const avgEdge = edgeLenCnt > 0 ? edgeLenSum / edgeLenCnt : 50;
-        const maxEdgeLen = avgEdge * 3.0; // Allow up to 3× average before culling
+        // (avgEdge / maxEdgeLen already computed before smoothing — see above)
 
         // Second pass: cull triangles with stretched edges
         const finalIndices = [];
@@ -3625,6 +4650,7 @@ async function initNorneData() {
     applyState(getCurrentState());
     // Build dots on startup if default mode is 'dots'
     toggleHorizonDots(params.showHorizonDots);
+    toggle3DDots(params.show3DDots);
 
     // Refresh Default preset snapshot + dropdown for this dataset
     initPresets();
@@ -3731,6 +4757,53 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ── Click horizon to create custom target ───────────────────────────────────
+let _canvasPointerDown = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    _canvasPointerDown = { x: e.clientX, y: e.clientY };
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.button !== 0) return;
+    if (!_canvasPointerDown) return;
+
+    const dx = e.clientX - _canvasPointerDown.x;
+    const dy = e.clientY - _canvasPointerDown.y;
+    _canvasPointerDown = null;
+
+    // Ignore drag releases so OrbitControls interaction doesn't place targets.
+    if ((dx * dx + dy * dy) > 25) return;
+    if (!params.customTargetAddOnClick) return;
+
+    const saveModal = document.getElementById('saveModal');
+    const deleteModal = document.getElementById('deleteModal');
+    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex') return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+
+    const horizonMeshes = allSurveyChildren().filter(c =>
+        c instanceof THREE.Mesh &&
+        c.userData.isHorizon &&
+        !c.userData.isContour &&
+        c.visible
+    );
+    const hits = raycaster.intersectObjects(horizonMeshes, false);
+    if (hits.length === 0) return;
+
+    addCustomTargetFromIntersection(hits[0]);
+});
+
+renderer.domElement.addEventListener('pointercancel', () => {
+    _canvasPointerDown = null;
+});
+
 // Boot — load both fields simultaneously
 (async () => {
     await initNorneData();   // Norne first (owns regional surface + camera setup)
@@ -3752,8 +4825,8 @@ window.addEventListener('resize', () => {
             try {
                 const saved = JSON.parse(localStorage.getItem('geo_layer_' + c.userData.layerName) || 'null');
                 if (saved && saved.opacity !== undefined) {
-                    c.material.transparent = true;
                     c.material.opacity = saved.opacity;
+                    c.material.transparent = saved.opacity < 1;
                     c.material.depthWrite = saved.opacity >= 1;
                     c.material.needsUpdate = true;
                 }
