@@ -115,6 +115,10 @@ modelGroup.add(volveSurveyGroup);
 const wellGroup = new THREE.Group();
 modelGroup.add(wellGroup);
 
+// Custom horizon wells live under the well group so they share position/scale transforms.
+const customHorizonWellGroup = new THREE.Group();
+wellGroup.add(customHorizonWellGroup);
+
 // Custom horizon targets are rendered in world space (outside survey groups)
 // so they never get pulled into horizon/fault colouring passes.
 const customTargetGroup = new THREE.Group();
@@ -845,13 +849,16 @@ function blendLateralToReference(lateralName, refName, targetTPLabel) {
 
 // ── Build Well Trajectories ────────────────────────────────────
 function buildWellTrajectories() {
-    // Clear existing
-    while (wellGroup.children.length > 0) {
-        const c = wellGroup.children[0];
+    // Clear existing built-in well meshes but preserve custom horizon wells group.
+    for (let i = wellGroup.children.length - 1; i >= 0; i--) {
+        const c = wellGroup.children[i];
+        if (c === customHorizonWellGroup) continue;
         wellGroup.remove(c);
-        c.geometry?.dispose();
-        if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
-        else c.material?.dispose();
+        c.traverse?.((obj) => {
+            obj.geometry?.dispose();
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material?.dispose();
+        });
     }
 
     // Recompute stations from original turn-point data each rebuild.
@@ -1191,6 +1198,8 @@ function buildWellTrajectories() {
             wellGroup.add(hRing);
         }
     }
+
+    rebuildCustomHorizonWells();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1202,6 +1211,10 @@ let customTargetSerial = 1;
 let customTargetFolder = null;
 let customTargetDeleteAllCtrl = null;
 let customTargetRowFolders = [];
+let customHorizonWellFolder = null;
+let customHorizonWellCreateCtrl = null;
+let customHorizonWellDeleteAllCtrl = null;
+let customHorizonWellRowFolders = [];
 
 const customTargetUi = {
     deleteAll: () => clearAllCustomTargets(),
@@ -1243,6 +1256,7 @@ function persistCustomTargetsToStorage() {
     try {
         localStorage.setItem(CUSTOM_TARGETS_STORAGE_KEY, JSON.stringify(getCustomTargetsState()));
     } catch (e) {}
+    pushCustomActionHistorySnapshot();
 }
 
 function findHorizonMeshForTarget(target) {
@@ -1331,6 +1345,10 @@ function rebuildCustomTargets() {
         ring.userData = { isCustomTarget: true, targetId: target.id, targetName: target.name };
         customTargetGroup.add(ring);
     });
+
+    if (typeof rebuildCustomHorizonWells === 'function') {
+        rebuildCustomHorizonWells();
+    }
 }
 
 function removeCustomTargetById(targetId) {
@@ -1340,6 +1358,8 @@ function removeCustomTargetById(targetId) {
     rebuildCustomTargetSerial();
     rebuildCustomTargets();
     rebuildCustomTargetControllers();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
     persistCustomTargetsToStorage();
 }
 
@@ -1409,20 +1429,22 @@ function rebuildCustomTargetControllers() {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'size', 5, 200, 1).name('Size (m)').onChange(() => {
+        rowFolder.add(target, 'size', 5, 200, 1).name('Size (m)').onFinishChange(() => {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'opacity', 0.05, 1, 0.05).name('Opacity').onChange(() => {
+        rowFolder.add(target, 'opacity', 0.05, 1, 0.05).name('Opacity').onFinishChange(() => {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'offsetEastM', -5000, 5000, 1).name('East/West (m)').onChange(() => {
+        rowFolder.add(target, 'offsetEastM', -5000, 5000, 1).name('East/West (m)').onFinishChange(() => {
             rebuildCustomTargets();
+            rebuildCustomHorizonWells();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'offsetNorthM', -5000, 5000, 1).name('North/South (m)').onChange(() => {
+        rowFolder.add(target, 'offsetNorthM', -5000, 5000, 1).name('North/South (m)').onFinishChange(() => {
             rebuildCustomTargets();
+            rebuildCustomHorizonWells();
             persistCustomTargetsToStorage();
         });
         const rowActions = {
@@ -1458,6 +1480,7 @@ function addCustomTargetFromIntersection(intersection) {
     customTargets.push(target);
     rebuildCustomTargets();
     rebuildCustomTargetControllers();
+    rebuildCustomHorizonWells();
     persistCustomTargetsToStorage();
 }
 
@@ -1466,6 +1489,8 @@ function clearAllCustomTargets() {
     rebuildCustomTargetSerial();
     rebuildCustomTargets();
     rebuildCustomTargetControllers();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
     persistCustomTargetsToStorage();
 }
 
@@ -1507,6 +1532,8 @@ function setCustomTargetsFromData(targets, options = {}) {
     rebuildCustomTargetSerial();
     rebuildCustomTargets();
     rebuildCustomTargetControllers();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
     if (persist) persistCustomTargetsToStorage();
 }
 
@@ -1521,6 +1548,725 @@ function loadCustomTargetsFromStorage() {
         setCustomTargetsFromData(parsed);
     } catch (e) {
         setCustomTargetsFromData([]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM HORIZON WELLS
+// ─────────────────────────────────────────────────────────────
+const customHorizonWells = []; // { id, name, targetIds, headLocal:{x,y,z}, kickoffDepthM, doglegSeverity, visible, color, wellheadColor, pathStyle, tubeRadius, dotSizingMode, dotSize, dotStartSize, dotEndSize, dotSpacing, showWellhead, wellheadScale }
+let customHorizonWellSerial = 1;
+let customWellPickerSelectedTargetIds = new Set();
+
+const customHorizonWellUi = {
+    createNewWell: () => openCreateCustomHorizonWellModal(),
+    deleteAll: () => clearAllCustomHorizonWells(),
+};
+
+function orderedUniqueTargetIds(targetIds) {
+    const seen = new Set();
+    const out = [];
+    for (const id of Array.isArray(targetIds) ? targetIds : []) {
+        if (typeof id !== 'string' || !id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    return out;
+}
+
+function getCustomTargetById(targetId) {
+    return customTargets.find(t => t.id === targetId) || null;
+}
+
+function customWellTargetOrderLabel(index1Based) {
+    const labels = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth', 'Tenth'];
+    if (index1Based >= 1 && index1Based <= labels.length) return `${labels[index1Based - 1]} Target`;
+    return `Target ${index1Based}`;
+}
+
+function setCustomHorizonWellTargetAtPosition(wellId, positionIndex, targetId) {
+    const well = getCustomHorizonWellById(wellId);
+    if (!well) return;
+    const ids = orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id));
+    if (positionIndex < 0 || positionIndex >= ids.length) return;
+    const selectedIndex = ids.indexOf(targetId);
+    if (selectedIndex < 0) return;
+    if (selectedIndex === positionIndex) return;
+    const prev = ids[positionIndex];
+    ids[positionIndex] = targetId;
+    ids[selectedIndex] = prev;
+    well.targetIds = ids;
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+}
+
+function nextCustomHorizonWellName() {
+    let name = `Custom Well ${customHorizonWellSerial++}`;
+    while (customHorizonWells.some(w => w.name === name)) {
+        name = `Custom Well ${customHorizonWellSerial++}`;
+    }
+    return name;
+}
+
+function rebuildCustomHorizonWellSerial() {
+    customHorizonWellSerial = 1;
+    customHorizonWells.forEach(w => {
+        const m = /^Custom Well\s+(\d+)$/.exec(w.name || '');
+        if (m) customHorizonWellSerial = Math.max(customHorizonWellSerial, parseInt(m[1], 10) + 1);
+    });
+}
+
+function makeUniqueCustomHorizonWellName(baseName, excludeWellId = null) {
+    const trimmed = typeof baseName === 'string' ? baseName.trim() : '';
+    if (!trimmed) return null;
+    let uniqueName = trimmed;
+    let suffix = 2;
+    while (customHorizonWells.some(w => w.id !== excludeWellId && w.name === uniqueName)) {
+        uniqueName = `${trimmed} (${suffix++})`;
+    }
+    return uniqueName;
+}
+
+function renameCustomHorizonWellById(wellId, proposedName) {
+    const well = customHorizonWells.find(w => w.id === wellId);
+    if (!well) return null;
+    const uniqueName = makeUniqueCustomHorizonWellName(proposedName, wellId);
+    if (!uniqueName) return null;
+    if (uniqueName === well.name) return uniqueName;
+    well.name = uniqueName;
+    rebuildCustomHorizonWellSerial();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+    return uniqueName;
+}
+
+function getCustomHorizonWellsState() {
+    return customHorizonWells.map(w => ({
+        id: w.id,
+        name: w.name,
+        targetIds: [...w.targetIds],
+        headLocal: { x: w.headLocal.x, y: w.headLocal.y, z: w.headLocal.z },
+        visible: w.visible,
+        color: w.color,
+        wellheadColor: w.wellheadColor,
+        pathStyle: w.pathStyle,
+        tubeRadius: w.tubeRadius,
+        dotSizingMode: w.dotSizingMode,
+        dotSize: w.dotSize,
+        dotStartSize: w.dotStartSize,
+        dotEndSize: w.dotEndSize,
+        dotSpacing: w.dotSpacing,
+        kickoffDepthM: w.kickoffDepthM,
+        doglegSeverity: w.doglegSeverity,
+        showWellhead: w.showWellhead,
+        wellheadScale: w.wellheadScale,
+    }));
+}
+
+function persistCustomHorizonWellsToStorage() {
+    try {
+        localStorage.setItem(CUSTOM_HORIZON_WELLS_STORAGE_KEY, JSON.stringify(getCustomHorizonWellsState()));
+    } catch (e) {}
+    pushCustomActionHistorySnapshot();
+}
+
+function getCustomHorizonWellById(wellId) {
+    return customHorizonWells.find(w => w.id === wellId) || null;
+}
+
+function clearCustomHorizonWellMeshes() {
+    while (customHorizonWellGroup.children.length > 0) {
+        const obj = customHorizonWellGroup.children[0];
+        customHorizonWellGroup.remove(obj);
+        obj.geometry?.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+        else obj.material?.dispose();
+    }
+}
+
+function getCustomWellTargetWorldPoints(well) {
+    const out = [];
+    for (const targetId of well.targetIds) {
+        const target = getCustomTargetById(targetId);
+        if (!target) continue;
+        const world = resolveCustomTargetWorldPosition(target);
+        if (!world) continue;
+        out.push(world);
+    }
+    return out;
+}
+
+function buildCustomWellPathCurve(well, targetWorldPoints) {
+    if (!Array.isArray(targetWorldPoints) || targetWorldPoints.length === 0) return null;
+    const headLocal = new THREE.Vector3(
+        Number(well.headLocal?.x) || 0,
+        Number(well.headLocal?.y) || 0,
+        Number(well.headLocal?.z) || 0
+    );
+    const targetsLocal = targetWorldPoints.map(p => wellGroup.worldToLocal(p.clone()));
+    const firstTarget = targetsLocal[0];
+    if (!firstTarget) return null;
+
+    const curvePath = new THREE.CurvePath();
+    const addLine = (a, b) => {
+        if (a.distanceTo(b) <= 1) return;
+        curvePath.add(new THREE.LineCurve3(a.clone(), b.clone()));
+    };
+
+    const kickoffDepthM = Math.max(50, Number(well.kickoffDepthM) || 1500);
+    const kickoffPoint = new THREE.Vector3(headLocal.x, -kickoffDepthM, headLocal.z);
+    if (headLocal.y <= kickoffPoint.y + 1) {
+        // Keep wellhead above kickoff so the initial section remains a vertical descent.
+        headLocal.y = kickoffPoint.y + 1;
+    }
+
+    // Vertical section from wellhead to kickoff point.
+    addLine(headLocal, kickoffPoint);
+
+    // Rounded kickoff segment (dogleg) into the straight first lateral section.
+    const toFirst = new THREE.Vector3().subVectors(firstTarget, kickoffPoint);
+    const toFirstLen = toFirst.length();
+    let straightDir = null;
+    if (targetsLocal.length >= 2) {
+        const firstToSecond = new THREE.Vector3().subVectors(targetsLocal[1], targetsLocal[0]);
+        if (firstToSecond.lengthSq() > 1e-6) {
+            straightDir = firstToSecond.normalize();
+        }
+    }
+    if (!straightDir) {
+        straightDir = toFirstLen > 1e-6 ? toFirst.clone().divideScalar(toFirstLen) : new THREE.Vector3(1, 0, 0);
+    }
+    let curveEnd = kickoffPoint.clone();
+    if (toFirstLen > 2) {
+        const dogleg = Math.max(1, Math.min(20, Number(well.doglegSeverity) || 8));
+        const baseCurveLen = Math.max(75, Math.min(3000, toFirstLen * 0.24));
+        const curveLen = Math.max(30, Math.min(toFirstLen * 0.8, baseCurveLen * (8 / dogleg)));
+        if (curveLen > 10 && curveLen < toFirstLen - 1) {
+            curveEnd = firstTarget.clone().add(straightDir.clone().multiplyScalar(-curveLen));
+            const severityT = (dogleg - 1) / 19;
+            const startHandle = curveLen * THREE.MathUtils.lerp(0.46, 0.24, severityT);
+            const endHandle = curveLen * THREE.MathUtils.lerp(0.42, 0.18, severityT);
+            const c1 = kickoffPoint.clone().add(new THREE.Vector3(0, -1, 0).multiplyScalar(startHandle));
+            const c2 = curveEnd.clone().add(straightDir.clone().multiplyScalar(-endHandle));
+            const minTurnY = Math.min(kickoffPoint.y, curveEnd.y);
+            const maxTurnY = Math.max(kickoffPoint.y, curveEnd.y);
+            c1.y = THREE.MathUtils.clamp(c1.y, minTurnY, maxTurnY);
+            c2.y = THREE.MathUtils.clamp(c2.y, minTurnY, maxTurnY);
+            curvePath.add(new THREE.CubicBezierCurve3(
+                kickoffPoint.clone(),
+                c1,
+                c2,
+                curveEnd.clone()
+            ));
+        }
+    }
+
+    // From end of curved kickoff onward, trajectory is straight between targets.
+    addLine(curveEnd, firstTarget);
+    for (let i = 1; i < targetsLocal.length; i++) {
+        addLine(targetsLocal[i - 1], targetsLocal[i]);
+    }
+
+    return curvePath.curves.length > 0 ? curvePath : null;
+}
+
+function rebuildCustomHorizonWells() {
+    clearCustomHorizonWellMeshes();
+    if (customHorizonWells.length === 0) return;
+
+    let mutated = false;
+    let needsControllerRefresh = false;
+    for (const well of customHorizonWells) {
+        const validTargetIds = orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id));
+        if (validTargetIds.length !== well.targetIds.length || validTargetIds.some((id, i) => id !== well.targetIds[i])) {
+            well.targetIds = validTargetIds;
+            mutated = true;
+            needsControllerRefresh = true;
+        }
+        const minHeadY = -(Math.max(50, Number(well.kickoffDepthM) || 1500)) + 1;
+        if ((Number(well.headLocal?.y) || 0) <= minHeadY) {
+            well.headLocal.y = minHeadY;
+            mutated = true;
+        }
+        if (well.dotSizingMode !== 'uniform' && well.dotSizingMode !== 'grows_with_depth') {
+            well.dotSizingMode = 'uniform';
+            mutated = true;
+        }
+        if (!well.visible) continue;
+        if (well.targetIds.length === 0) continue;
+
+        const targetWorldPoints = getCustomWellTargetWorldPoints(well);
+        if (targetWorldPoints.length === 0) continue;
+        const pathCurve = buildCustomWellPathCurve(well, targetWorldPoints);
+        if (!pathCurve) continue;
+
+        const color = new THREE.Color(well.color || params.customHorizonWellColor);
+        const pathStyle = well.pathStyle === 'dots' ? 'dots' : 'tube';
+        const tubeRadius = Math.max(0.5, Number(well.tubeRadius) || Number(params.customHorizonWellTubeRadius) || 4);
+        const dotSize = Math.max(1, Number(well.dotSize) || Number(params.customHorizonWellDotSize) || 4);
+        const dotSizingMode = well.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform';
+        const dotStartSize = Math.max(0.5, Number(well.dotStartSize) || dotSize);
+        const dotEndSize = Math.max(0.5, Number(well.dotEndSize) || dotStartSize);
+        const dotSpacing = Math.max(5, Number(well.dotSpacing) || Number(params.customHorizonWellDotSpacing) || 40);
+
+        if (pathStyle === 'tube') {
+            const totalLength = Math.max(1, pathCurve.getLength());
+            const tubeSegments = Math.max(24, Math.round(totalLength / 20));
+            const tubeGeo = new THREE.TubeGeometry(pathCurve, tubeSegments, tubeRadius, 8, false);
+            const tubeMat = new THREE.MeshPhongMaterial({
+                color,
+                emissive: color.clone().multiplyScalar(0.15),
+                shininess: 60,
+            });
+            const tube = new THREE.Mesh(tubeGeo, tubeMat);
+            tube.userData = { isCustomHorizonWell: true, customHorizonWellId: well.id };
+            customHorizonWellGroup.add(tube);
+        } else {
+            const totalLength = Math.max(1, pathCurve.getLength());
+            const dotCount = Math.max(2, Math.floor(totalLength / dotSpacing));
+            const dotGeo = new THREE.SphereGeometry(1, 8, 8);
+            const dotMat = new THREE.MeshPhongMaterial({
+                color,
+                emissive: color.clone().multiplyScalar(0.15),
+                shininess: 60,
+            });
+            const instanced = new THREE.InstancedMesh(dotGeo, dotMat, dotCount);
+            const dummy = new THREE.Object3D();
+            const yCompensation = 1 / (params.zScale || 1);
+            for (let i = 0; i < dotCount; i++) {
+                const t = i / (dotCount - 1);
+                const p = pathCurve.getPointAt(t);
+                const dotScale = dotSizingMode === 'grows_with_depth'
+                    ? THREE.MathUtils.lerp(dotStartSize, dotEndSize, t)
+                    : dotSize;
+                dummy.position.copy(p);
+                dummy.scale.set(dotScale, dotScale * yCompensation, dotScale);
+                dummy.updateMatrix();
+                instanced.setMatrixAt(i, dummy.matrix);
+            }
+            instanced.instanceMatrix.needsUpdate = true;
+            instanced.userData = { isCustomHorizonWell: true, customHorizonWellId: well.id };
+            customHorizonWellGroup.add(instanced);
+        }
+
+        if (well.showWellhead !== false) {
+            const wellheadColor = new THREE.Color(well.wellheadColor || well.color || params.customHorizonWellColor);
+            const wellheadScale = Math.max(0.2, Number(well.wellheadScale) || Number(params.customHorizonWellheadScale) || 1);
+            const coneRadius = tubeRadius * 3 * wellheadScale;
+            const coneHeight = coneRadius * 3;
+            const headGeo = new THREE.ConeGeometry(coneRadius, coneHeight, 16);
+            const headMat = new THREE.MeshPhongMaterial({
+                color: wellheadColor,
+                emissive: wellheadColor.clone().multiplyScalar(0.3),
+            });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.set(
+                Number(well.headLocal?.x) || 0,
+                Number(well.headLocal?.y) || 0,
+                Number(well.headLocal?.z) || 0
+            );
+            head.position.y += coneHeight * 0.5;
+            head.scale.y = 1 / (params.zScale || 1);
+            head.userData = {
+                isCustomHorizonWell: true,
+                isCustomHorizonWellhead: true,
+                customHorizonWellId: well.id,
+            };
+            customHorizonWellGroup.add(head);
+        }
+    }
+
+    if (mutated) {
+        persistCustomHorizonWellsToStorage();
+        if (needsControllerRefresh) rebuildCustomHorizonWellControllers();
+    }
+}
+
+function removeCustomHorizonWellById(wellId) {
+    const idx = customHorizonWells.findIndex(w => w.id === wellId);
+    if (idx < 0) return;
+    customHorizonWells.splice(idx, 1);
+    rebuildCustomHorizonWellSerial();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+}
+
+function duplicateCustomHorizonWellById(wellId) {
+    const src = getCustomHorizonWellById(wellId);
+    if (!src) return null;
+
+    const duplicated = {
+        id: `chw_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+        name: makeUniqueCustomHorizonWellName(`${src.name} Copy`) || nextCustomHorizonWellName(),
+        targetIds: orderedUniqueTargetIds(src.targetIds),
+        headLocal: {
+            x: Number(src.headLocal?.x) || 0,
+            y: Number(src.headLocal?.y) || 0,
+            z: Number(src.headLocal?.z) || 0,
+        },
+        kickoffDepthM: Math.max(50, Number(src.kickoffDepthM) || 1500),
+        doglegSeverity: Math.max(1, Math.min(20, Number(src.doglegSeverity) || 8)),
+        visible: src.visible !== false,
+        color: typeof src.color === 'string' && src.color ? src.color : params.customHorizonWellColor,
+        wellheadColor: typeof src.wellheadColor === 'string' && src.wellheadColor
+            ? src.wellheadColor
+            : (typeof src.color === 'string' && src.color ? src.color : params.customHorizonWellColor),
+        pathStyle: src.pathStyle === 'dots' ? 'dots' : 'tube',
+        tubeRadius: Math.max(1, Number(src.tubeRadius) || Number(params.customHorizonWellTubeRadius) || 4),
+        dotSizingMode: src.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
+        dotSize: Math.max(0.5, Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
+        dotStartSize: Math.max(0.5, Number(src.dotStartSize) || Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
+        dotEndSize: Math.max(0.5, Number(src.dotEndSize) || Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
+        dotSpacing: Math.max(5, Number(src.dotSpacing) || Number(params.customHorizonWellDotSpacing) || 40),
+        showWellhead: src.showWellhead !== false,
+        wellheadScale: Math.max(0.2, Number(src.wellheadScale) || Number(params.customHorizonWellheadScale) || 1),
+    };
+
+    customHorizonWells.push(duplicated);
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+    return duplicated.id;
+}
+
+function clearAllCustomHorizonWells() {
+    customHorizonWells.length = 0;
+    rebuildCustomHorizonWellSerial();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+}
+
+function createCustomHorizonWellFromTargetIds(targetIds) {
+    const validTargetIds = orderedUniqueTargetIds(targetIds).filter(id => !!getCustomTargetById(id));
+    if (validTargetIds.length === 0) return null;
+
+    const firstTarget = getCustomTargetById(validTargetIds[0]);
+    if (!firstTarget) return null;
+    const firstTargetWorld = resolveCustomTargetWorldPosition(firstTarget);
+    if (!firstTargetWorld) return null;
+
+    const defaultHeadWorld = firstTargetWorld.clone().add(new THREE.Vector3(0, 1200, 1800));
+    const defaultHeadLocal = wellGroup.worldToLocal(defaultHeadWorld.clone());
+    const firstTargetLocal = wellGroup.worldToLocal(firstTargetWorld.clone());
+    const defaultKickoffDepthM = Math.max(100, Math.round(Math.abs(firstTargetLocal.y) * 0.55));
+    const well = {
+        id: `chw_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+        name: nextCustomHorizonWellName(),
+        targetIds: validTargetIds,
+        headLocal: {
+            x: defaultHeadLocal.x,
+            y: defaultHeadLocal.y,
+            z: defaultHeadLocal.z,
+        },
+        kickoffDepthM: defaultKickoffDepthM,
+        doglegSeverity: Number(params.customHorizonWellDoglegSeverity) || 8,
+        visible: true,
+        color: params.customHorizonWellColor,
+        wellheadColor: params.customHorizonWellColor,
+        pathStyle: params.customHorizonWellPathStyle === 'dots' ? 'dots' : 'tube',
+        tubeRadius: params.customHorizonWellTubeRadius,
+        dotSizingMode: 'uniform',
+        dotSize: params.customHorizonWellDotSize,
+        dotStartSize: params.customHorizonWellDotSize,
+        dotEndSize: params.customHorizonWellDotSize,
+        dotSpacing: params.customHorizonWellDotSpacing,
+        showWellhead: params.customHorizonWellheadVisible !== false,
+        wellheadScale: params.customHorizonWellheadScale,
+    };
+    customHorizonWells.push(well);
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+    return well.id;
+}
+
+function renderCustomHorizonWellTargetPicker() {
+    const listEl = document.getElementById('customWellTargetDropdownList');
+    const labelEl = document.getElementById('customWellTargetDropdownLabel');
+    if (!listEl || !labelEl) return;
+    listEl.innerHTML = '';
+
+    if (customTargets.length === 0) {
+        labelEl.textContent = 'No custom targets available';
+        const empty = document.createElement('div');
+        empty.className = 'custom-well-picker-empty';
+        empty.textContent = 'Create at least one custom target first.';
+        listEl.appendChild(empty);
+        return;
+    }
+
+    customTargets.forEach(target => {
+        const row = document.createElement('label');
+        row.className = 'custom-well-picker-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = customWellPickerSelectedTargetIds.has(target.id);
+        cb.addEventListener('change', () => {
+            if (cb.checked) customWellPickerSelectedTargetIds.add(target.id);
+            else customWellPickerSelectedTargetIds.delete(target.id);
+            renderCustomHorizonWellTargetPicker();
+        });
+        const text = document.createElement('span');
+        text.textContent = target.name;
+        row.appendChild(cb);
+        row.appendChild(text);
+        listEl.appendChild(row);
+    });
+
+    if (customWellPickerSelectedTargetIds.size === 0) {
+        labelEl.textContent = 'Select target(s)';
+    } else {
+        const selectedNames = [...customWellPickerSelectedTargetIds]
+            .map(id => getCustomTargetById(id)?.name)
+            .filter(Boolean);
+        labelEl.textContent = `${selectedNames.length} selected`;
+    }
+}
+
+function openCreateCustomHorizonWellModal(prefillTargetIds = []) {
+    if (customTargets.length === 0) {
+        alert('Create at least one custom target first.');
+        return;
+    }
+    customWellPickerSelectedTargetIds = new Set(
+        orderedUniqueTargetIds(prefillTargetIds).filter(id => !!getCustomTargetById(id))
+    );
+    const listEl = document.getElementById('customWellTargetDropdownList');
+    if (listEl) listEl.classList.remove('open');
+    renderCustomHorizonWellTargetPicker();
+    const modal = document.getElementById('createWellModal');
+    if (modal) modal.style.display = 'flex';
+}
+
+function confirmCreateCustomHorizonWellFromModal() {
+    const targetIds = [...customWellPickerSelectedTargetIds];
+    const createdId = createCustomHorizonWellFromTargetIds(targetIds);
+    if (!createdId) {
+        alert('Select at least one target to create a custom well.');
+        return;
+    }
+    customWellPickerSelectedTargetIds = new Set();
+    const modal = document.getElementById('createWellModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function setCustomHorizonWellsFromData(wells, options = {}) {
+    const persist = options.persist === true;
+    customHorizonWells.length = 0;
+    if (Array.isArray(wells)) {
+        wells.forEach((raw, i) => {
+            if (!raw) return;
+            const safeName = typeof raw.name === 'string' && raw.name.trim()
+                ? raw.name.trim()
+                : `Custom Well ${i + 1}`;
+            let uniqueName = safeName;
+            let suffix = 2;
+            while (customHorizonWells.some(w => w.name === uniqueName)) {
+                uniqueName = `${safeName} (${suffix++})`;
+            }
+            customHorizonWells.push({
+                id: typeof raw.id === 'string' && raw.id ? raw.id : `chw_${Date.now()}_${i}`,
+                name: uniqueName,
+                targetIds: orderedUniqueTargetIds(raw.targetIds),
+                headLocal: {
+                    x: Number(raw.headLocal?.x) || 0,
+                    y: Number(raw.headLocal?.y) || 0,
+                    z: Number(raw.headLocal?.z) || 0,
+                },
+                visible: raw.visible !== false,
+                color: typeof raw.color === 'string' && raw.color ? raw.color : params.customHorizonWellColor,
+                wellheadColor: typeof raw.wellheadColor === 'string' && raw.wellheadColor ? raw.wellheadColor : (typeof raw.color === 'string' && raw.color ? raw.color : params.customHorizonWellColor),
+                pathStyle: raw.pathStyle === 'dots' ? 'dots' : 'tube',
+                tubeRadius: Number(raw.tubeRadius) > 0 ? Number(raw.tubeRadius) : params.customHorizonWellTubeRadius,
+                dotSize: Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize,
+                dotSizingMode: raw.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
+                dotStartSize: Number(raw.dotStartSize) > 0 ? Number(raw.dotStartSize) : (Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize),
+                dotEndSize: Number(raw.dotEndSize) > 0 ? Number(raw.dotEndSize) : (Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize),
+                dotSpacing: Number(raw.dotSpacing) > 0 ? Number(raw.dotSpacing) : params.customHorizonWellDotSpacing,
+                kickoffDepthM: Number(raw.kickoffDepthM) > 0 ? Number(raw.kickoffDepthM) : 1500,
+                doglegSeverity: Number(raw.doglegSeverity) > 0 ? Number(raw.doglegSeverity) : (Number(params.customHorizonWellDoglegSeverity) || 8),
+                showWellhead: raw.showWellhead !== false,
+                wellheadScale: Number(raw.wellheadScale) > 0 ? Number(raw.wellheadScale) : params.customHorizonWellheadScale,
+            });
+        });
+    }
+    rebuildCustomHorizonWellSerial();
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    if (persist) persistCustomHorizonWellsToStorage();
+}
+
+function loadCustomHorizonWellsFromStorage() {
+    const raw = localStorage.getItem(CUSTOM_HORIZON_WELLS_STORAGE_KEY);
+    if (!raw) {
+        setCustomHorizonWellsFromData([]);
+        return;
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        setCustomHorizonWellsFromData(parsed);
+    } catch (e) {
+        setCustomHorizonWellsFromData([]);
+    }
+}
+
+function rebuildCustomHorizonWellControllers() {
+    if (!customHorizonWellFolder) return;
+
+    const guiRoot = customHorizonWellFolder.domElement?.closest?.('.lil-gui') || null;
+    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+
+    customHorizonWellRowFolders.forEach(folder => folder.destroy());
+    customHorizonWellRowFolders = [];
+    if (customHorizonWellDeleteAllCtrl) {
+        customHorizonWellDeleteAllCtrl.destroy();
+        customHorizonWellDeleteAllCtrl = null;
+    }
+
+    if (!customHorizonWellCreateCtrl) {
+        customHorizonWellCreateCtrl = customHorizonWellFolder.add(customHorizonWellUi, 'createNewWell').name('Create New Well');
+    }
+    if (customHorizonWells.length > 0) {
+        customHorizonWellDeleteAllCtrl = customHorizonWellFolder.add(customHorizonWellUi, 'deleteAll').name('Delete All Wells');
+    }
+
+    customHorizonWells.forEach(well => {
+        const rowFolder = customHorizonWellFolder.addFolder(well.name);
+        _trackFolder(rowFolder, `custom-horizon-well:${well.id}`);
+
+        const rowNameModel = { name: well.name };
+        const nameCtrl = rowFolder.add(rowNameModel, 'name').name('Name');
+        nameCtrl.onFinishChange((value) => {
+            const renamed = renameCustomHorizonWellById(well.id, value);
+            if (renamed) return;
+            rowNameModel.name = well.name;
+            nameCtrl.updateDisplay();
+        });
+
+        rowFolder.add(well, 'visible').name('Visible').onChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.addColor(well, 'color').name('Color').onChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.addColor(well, 'wellheadColor').name('Wellhead Color').onChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(well, 'kickoffDepthM', 50, 8000, 10).name('Kickoff Depth (m)').onFinishChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(well, 'doglegSeverity', 1, 20, 0.1).name('Dogleg Severity').onFinishChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        const headPosModel = {
+            headEastWestM: Number(well.headLocal?.x) || 0,
+            headHeightM: Number(well.headLocal?.y) || 0,
+            headNorthSouthM: -(Number(well.headLocal?.z) || 0),
+        };
+        rowFolder.add(headPosModel, 'headEastWestM', -25000, 25000, 1).name('Head East/West (m)').onFinishChange((v) => {
+            well.headLocal.x = Number(v) || 0;
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(headPosModel, 'headHeightM', -5000, 5000, 10).name('Head Height (m)').onFinishChange((v) => {
+            const requestedY = Number(v) || 0;
+            const minHeadY = -(Math.max(50, Number(well.kickoffDepthM) || 1500)) + 1;
+            well.headLocal.y = Math.max(requestedY, minHeadY);
+            headPosModel.headHeightM = well.headLocal.y;
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(headPosModel, 'headNorthSouthM', -25000, 25000, 1).name('Head North/South (m)').onFinishChange((v) => {
+            well.headLocal.z = -(Number(v) || 0);
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(well, 'pathStyle', ['tube', 'dots']).name('Path Style').onChange(() => {
+            rebuildCustomHorizonWells();
+            rebuildCustomHorizonWellControllers();
+            persistCustomHorizonWellsToStorage();
+        });
+        if (well.pathStyle === 'dots') {
+            rowFolder.add(well, 'dotSizingMode', {
+                'Uniform': 'uniform',
+                'Grows with depth': 'grows_with_depth',
+            }).name('Dot Sizing').onChange((value) => {
+                if (value !== 'uniform' && value !== 'grows_with_depth') {
+                    well.dotSizingMode = 'uniform';
+                }
+                rebuildCustomHorizonWells();
+                rebuildCustomHorizonWellControllers();
+                persistCustomHorizonWellsToStorage();
+            });
+            if (well.dotSizingMode === 'grows_with_depth') {
+                rowFolder.add(well, 'dotStartSize', 0.5, 30, 0.5).name('Starting Dot Size (m)').onFinishChange(() => {
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                });
+                rowFolder.add(well, 'dotEndSize', 0.5, 30, 0.5).name('End Dot Size (m)').onFinishChange(() => {
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                });
+            } else {
+                rowFolder.add(well, 'dotSize', 1, 15, 0.5).name('Dot Size (m)').onFinishChange(() => {
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                });
+            }
+            rowFolder.add(well, 'dotSpacing', 5, 100, 5).name('Dot Spacing (m)').onFinishChange(() => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            });
+        } else {
+            rowFolder.add(well, 'tubeRadius', 1, 30, 1).name('Tube Radius (m)').onFinishChange(() => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            });
+        }
+        rowFolder.add(well, 'showWellhead').name('Show Wellhead').onChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        rowFolder.add(well, 'wellheadScale', 0.2, 5, 0.1).name('Wellhead Scale').onFinishChange(() => {
+            rebuildCustomHorizonWells();
+            persistCustomHorizonWellsToStorage();
+        });
+        const orderTargetIds = orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id));
+        if (orderTargetIds.length > 1) {
+            const orderOptions = {};
+            orderTargetIds.forEach(id => {
+                const t = getCustomTargetById(id);
+                if (t) orderOptions[t.name] = id;
+            });
+            const orderModel = {};
+            orderTargetIds.forEach((id, idx) => {
+                const key = `targetOrder${idx + 1}`;
+                orderModel[key] = id;
+                rowFolder.add(orderModel, key, orderOptions).name(customWellTargetOrderLabel(idx + 1)).onChange((selectedId) => {
+                    setCustomHorizonWellTargetAtPosition(well.id, idx, selectedId);
+                });
+            });
+        }
+
+        const rowActions = {
+            deleteWell: () => removeCustomHorizonWellById(well.id),
+        };
+        rowFolder.add(rowActions, 'deleteWell').name('Delete');
+        customHorizonWellRowFolders.push(rowFolder);
+    });
+
+    if (guiRoot) {
+        requestAnimationFrame(() => {
+            guiRoot.scrollTop = prevScrollTop;
+        });
     }
 }
 
@@ -1649,6 +2395,78 @@ uiStyles.textContent = `
     .custom-target-context-menu button:hover {
         background: rgba(255, 255, 255, 0.12);
     }
+    .custom-well-target-dropdown {
+        margin-bottom: 15px;
+    }
+    .custom-well-target-dropdown-toggle {
+        width: 100%;
+        text-align: left;
+        background: #111;
+        color: #ddd;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 8px 10px;
+        cursor: pointer;
+        font-size: 13px;
+    }
+    .custom-well-target-dropdown-list {
+        display: none;
+        margin-top: 8px;
+        max-height: 220px;
+        overflow: auto;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: #111;
+        padding: 6px;
+    }
+    .custom-well-target-dropdown-list.open {
+        display: block;
+    }
+    .custom-well-picker-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ddd;
+        font-size: 13px;
+        padding: 5px 4px;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .custom-well-picker-item:hover {
+        background: rgba(255, 255, 255, 0.08);
+    }
+    .custom-well-picker-empty {
+        color: #999;
+        font-size: 12px;
+        padding: 6px 4px;
+    }
+    .history-actions {
+        position: fixed;
+        top: 12px;
+        right: 320px;
+        z-index: 1800;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .history-btn {
+        background: rgba(34, 34, 34, 0.88);
+        border: 1px solid #4a4a4a;
+        color: #e6e6e6;
+        padding: 7px 11px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+        font-family: sans-serif;
+        min-width: 62px;
+    }
+    .history-btn:hover:not(:disabled) {
+        background: rgba(56, 56, 56, 0.95);
+    }
+    .history-btn:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
 `;
 document.head.appendChild(uiStyles);
 
@@ -1668,6 +2486,10 @@ uiContainer.innerHTML = `
         <button id="btnDelete" class="icon-btn delete" title="Delete Preset">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         </button>
+    </div>
+    <div class="history-actions" id="historyActions">
+        <button id="btnUndoAction" class="history-btn" type="button" title="Undo" disabled>Undo</button>
+        <button id="btnRedoAction" class="history-btn" type="button" title="Redo" disabled>Redo</button>
     </div>
 
     <!-- Save Modal -->
@@ -1690,6 +2512,23 @@ uiContainer.innerHTML = `
             <div class="modal-buttons">
                 <button class="btn btn-cancel" onclick="closeModal('deleteModal')">Cancel</button>
                 <button class="btn btn-danger" id="confirmDelete">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Custom Well Modal -->
+    <div id="createWellModal" class="modal-overlay">
+        <div class="modal">
+            <h3>Create Custom Horizon Well</h3>
+            <div class="custom-well-target-dropdown">
+                <button id="customWellTargetDropdownToggle" class="custom-well-target-dropdown-toggle" type="button">
+                    <span id="customWellTargetDropdownLabel">Select target(s)</span>
+                </button>
+                <div id="customWellTargetDropdownList" class="custom-well-target-dropdown-list"></div>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-cancel" onclick="closeModal('createWellModal')">Cancel</button>
+                <button class="btn btn-primary" id="confirmCreateWell">Create Well</button>
             </div>
         </div>
     </div>
@@ -1736,11 +2575,38 @@ function showCustomTargetContextMenu(clientX, clientY, items) {
     customTargetContextMenuEl.style.top = `${top}px`;
 }
 
+document.getElementById('customWellTargetDropdownToggle')?.addEventListener('click', () => {
+    const listEl = document.getElementById('customWellTargetDropdownList');
+    if (!listEl) return;
+    listEl.classList.toggle('open');
+});
+
+document.getElementById('confirmCreateWell')?.addEventListener('click', () => {
+    confirmCreateCustomHorizonWellFromModal();
+});
+document.getElementById('btnUndoAction')?.addEventListener('click', () => {
+    undoCustomAction();
+});
+document.getElementById('btnRedoAction')?.addEventListener('click', () => {
+    redoCustomAction();
+});
+
 document.addEventListener('pointerdown', (e) => {
     if (!(e.target instanceof Node)) return;
     if (customTargetContextMenuEl.style.display !== 'block') return;
     if (customTargetContextMenuEl.contains(e.target)) return;
     hideCustomTargetContextMenu();
+}, true);
+
+document.addEventListener('pointerdown', (e) => {
+    const listEl = document.getElementById('customWellTargetDropdownList');
+    const toggleEl = document.getElementById('customWellTargetDropdownToggle');
+    if (!listEl || !toggleEl) return;
+    if (!listEl.classList.contains('open')) return;
+    const t = e.target;
+    if (!(t instanceof Node)) return;
+    if (listEl.contains(t) || toggleEl.contains(t)) return;
+    listEl.classList.remove('open');
 }, true);
 
 window.addEventListener('blur', hideCustomTargetContextMenu);
@@ -1764,11 +2630,13 @@ function hideAllUI() {
     _uiHidden = true;
     const guiEl   = document.querySelector('.lil-gui.root');
     const preBar  = document.getElementById('presetBar');
+    const history = document.getElementById('historyActions');
     const compass = document.getElementById('compass-hud');
     const loading = document.getElementById('loading');
     const title   = document.querySelector('#ui-container h1');
     if (guiEl)   guiEl.style.display   = 'none';
     if (preBar)  preBar.style.display  = 'none';
+    if (history) history.style.display = 'none';
     if (compass) compass.style.display = 'none';
     if (loading) loading.style.display = 'none';
     if (title)   title.style.display   = 'none';
@@ -1782,11 +2650,13 @@ function showAllUI() {
     _uiHidden = false;
     const guiEl   = document.querySelector('.lil-gui.root');
     const preBar  = document.getElementById('presetBar');
+    const history = document.getElementById('historyActions');
     const compass = document.getElementById('compass-hud');
     const loading = document.getElementById('loading');
     const title   = document.querySelector('#ui-container h1');
     if (guiEl)   guiEl.style.display   = '';
     if (preBar)  preBar.style.display  = '';
+    if (history) history.style.display = '';
     if (compass) compass.style.display = '';
     if (loading) loading.style.display = '';
     if (title)   title.style.display   = '';
@@ -1798,6 +2668,116 @@ document.querySelector('#ui-container h1').addEventListener('click', hideAllUI);
 const PARAMS_STORAGE_KEY = 'geo_viewer_params';
 const PANEL_STATE_KEY   = 'geo_viewer_panel_state';
 const CUSTOM_TARGETS_STORAGE_KEY = 'geo_custom_horizon_targets';
+const CUSTOM_HORIZON_WELLS_STORAGE_KEY = 'geo_custom_horizon_wells';
+const CUSTOM_ACTION_HISTORY_LIMIT = 250;
+
+let customActionHistory = [];
+let customActionHistoryIndex = -1;
+let customActionHistoryInitialized = false;
+let customActionHistoryApplying = false;
+
+function captureCustomActionState() {
+    return {
+        targets: getCustomTargetsState(),
+        wells: getCustomHorizonWellsState(),
+    };
+}
+
+function serializeCustomActionState(state) {
+    try {
+        return JSON.stringify(state);
+    } catch (e) {
+        return '';
+    }
+}
+
+function updateCustomActionButtons() {
+    const undoBtn = document.getElementById('btnUndoAction');
+    const redoBtn = document.getElementById('btnRedoAction');
+    if (undoBtn) undoBtn.disabled = customActionHistoryIndex <= 0;
+    if (redoBtn) redoBtn.disabled = customActionHistoryIndex >= customActionHistory.length - 1;
+}
+
+function positionHistoryActions() {
+    const historyEl = document.getElementById('historyActions');
+    if (!(historyEl instanceof HTMLElement)) return;
+    const guiRoot = document.querySelector('.lil-gui.root');
+    const guiWidth = guiRoot instanceof HTMLElement ? guiRoot.offsetWidth : 300;
+    historyEl.style.right = `${guiWidth + 16}px`;
+}
+
+function pushCustomActionHistorySnapshot() {
+    if (!customActionHistoryInitialized || customActionHistoryApplying) {
+        updateCustomActionButtons();
+        return;
+    }
+
+    const state = captureCustomActionState();
+    const serialized = serializeCustomActionState(state);
+    if (!serialized) return;
+
+    const current = customActionHistory[customActionHistoryIndex];
+    if (current?.serialized === serialized) {
+        updateCustomActionButtons();
+        return;
+    }
+
+    if (customActionHistoryIndex < customActionHistory.length - 1) {
+        customActionHistory = customActionHistory.slice(0, customActionHistoryIndex + 1);
+    }
+    customActionHistory.push({
+        state: JSON.parse(serialized),
+        serialized,
+    });
+    if (customActionHistory.length > CUSTOM_ACTION_HISTORY_LIMIT) {
+        const overflow = customActionHistory.length - CUSTOM_ACTION_HISTORY_LIMIT;
+        customActionHistory.splice(0, overflow);
+    }
+    customActionHistoryIndex = customActionHistory.length - 1;
+    updateCustomActionButtons();
+}
+
+function applyCustomActionState(state) {
+    customActionHistoryApplying = true;
+    try {
+        const targets = Array.isArray(state?.targets) ? state.targets : [];
+        const wells = Array.isArray(state?.wells) ? state.wells : [];
+        setCustomTargetsFromData(targets, { persist: false });
+        setCustomHorizonWellsFromData(wells, { persist: false });
+        try { localStorage.setItem(CUSTOM_TARGETS_STORAGE_KEY, JSON.stringify(getCustomTargetsState())); } catch (e) {}
+        try { localStorage.setItem(CUSTOM_HORIZON_WELLS_STORAGE_KEY, JSON.stringify(getCustomHorizonWellsState())); } catch (e) {}
+    } finally {
+        customActionHistoryApplying = false;
+    }
+    updateCustomActionButtons();
+}
+
+function undoCustomAction() {
+    if (customActionHistoryIndex <= 0) {
+        updateCustomActionButtons();
+        return;
+    }
+    customActionHistoryIndex -= 1;
+    applyCustomActionState(customActionHistory[customActionHistoryIndex]?.state);
+}
+
+function redoCustomAction() {
+    if (customActionHistoryIndex >= customActionHistory.length - 1) {
+        updateCustomActionButtons();
+        return;
+    }
+    customActionHistoryIndex += 1;
+    applyCustomActionState(customActionHistory[customActionHistoryIndex]?.state);
+}
+
+function initializeCustomActionHistory() {
+    customActionHistory = [];
+    customActionHistoryIndex = -1;
+    customActionHistoryInitialized = true;
+    pushCustomActionHistorySnapshot();
+    updateCustomActionButtons();
+    positionHistoryActions();
+}
 
 // ── Panel open/close persistence ─────────────────────────────────────────────
 // Call after each addFolder() to (a) restore its prior open/closed state from
@@ -1919,6 +2899,14 @@ const _paramsDefaults = {
     customTargetColor: '#ffd166',
     customTargetSize: 75,
     customTargetOpacity: 0.65,
+    customHorizonWellColor: '#7de2d1',
+    customHorizonWellPathStyle: 'tube',
+    customHorizonWellDoglegSeverity: 8,
+    customHorizonWellTubeRadius: 4,
+    customHorizonWellDotSize: 4,
+    customHorizonWellDotSpacing: 40,
+    customHorizonWellheadVisible: true,
+    customHorizonWellheadScale: 1.0,
     wellOffsetEastKm: -15,
     wellOffsetNorthKm: -16.5,
     wellRotationDeg: 14,
@@ -3873,6 +4861,7 @@ vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(
     modelGroup.scale.y = v;
     buildWellTrajectories(); // re-counter-scale spheres
     rebuildCustomTargets();
+    rebuildCustomHorizonWells();
 });
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
@@ -3992,6 +4981,7 @@ function applyNorneSurveyOffset() {
     recomputeFitBlend();
     if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
     rebuildCustomTargets();
+    rebuildCustomHorizonWells();
 }
 nornePosFolder.add(params, 'surveyOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyNorneSurveyOffset);
 nornePosFolder.add(params, 'surveyOffsetNorthKm', -20, 20, 0.5).name('North/South (km)').onChange(applyNorneSurveyOffset);
@@ -4016,6 +5006,7 @@ function applyVolveSurveyOffset() {
     recomputeFitBlend();
     if (params.regionalFitToBase || params.regionalFitToVolve) applyRegionalBlend(params.regionalBlendKm);
     rebuildCustomTargets();
+    rebuildCustomHorizonWells();
 }
 volvePosFolder.add(params, 'volveOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyVolveSurveyOffset);
 volvePosFolder.add(params, 'volveOffsetNorthKm', -25, 25, 0.5).name('North/South (km)').onChange(applyVolveSurveyOffset);
@@ -4037,6 +5028,7 @@ function applyWellOffset() {
     wellGroup.position.y = -params.wellDepthOffsetM;
     wellGroup.rotation.y = -params.wellRotationDeg * Math.PI / 180;
     wellGroup.scale.set(params.wellScale, params.wellScale, params.wellScale);
+    rebuildCustomHorizonWells();
 }
 wellPosFolder.add(params, 'wellOffsetEastKm', -30, 30, 0.5).name('East/West (km)').onChange(applyWellOffset);
 wellPosFolder.add(params, 'wellOffsetNorthKm', -25, 25, 0.5).name('North/South (km)').onChange(applyWellOffset);
@@ -4085,6 +5077,19 @@ customTargetFolder.addColor(params, 'customTargetColor').name('New Target Color'
 customTargetFolder.add(params, 'customTargetSize', 5, 200, 1).name('New Target Size (m)');
 customTargetFolder.add(params, 'customTargetOpacity', 0.05, 1.0, 0.05).name('New Target Opacity');
 loadCustomTargetsFromStorage();
+
+customHorizonWellFolder = wellFolder.addFolder('Custom Horizon Wells');
+_trackFolder(customHorizonWellFolder, 'Custom Horizon Wells');
+customHorizonWellFolder.addColor(params, 'customHorizonWellColor').name('New Well Color');
+customHorizonWellFolder.add(params, 'customHorizonWellPathStyle', ['tube', 'dots']).name('New Path Style');
+customHorizonWellFolder.add(params, 'customHorizonWellDoglegSeverity', 1, 20, 0.1).name('New Dogleg Severity');
+customHorizonWellFolder.add(params, 'customHorizonWellTubeRadius', 1, 30, 1).name('New Tube Radius (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellDotSize', 1, 15, 0.5).name('New Dot Size (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellDotSpacing', 5, 100, 5).name('New Dot Spacing (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellheadVisible').name('New Show Wellhead');
+customHorizonWellFolder.add(params, 'customHorizonWellheadScale', 0.2, 5, 0.1).name('New Wellhead Scale');
+loadCustomHorizonWellsFromStorage();
+initializeCustomActionHistory();
 
 
 
@@ -4890,6 +5895,7 @@ window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    positionHistoryActions();
 });
 
 // ── Right-click menu for custom horizon targets ─────────────────────────────
@@ -4930,7 +5936,75 @@ function hitHorizonAtClientPoint(clientX, clientY) {
     return hits.length > 0 ? hits[0] : null;
 }
 
+function hitCustomWellheadAtClientPoint(clientX, clientY) {
+    const wellheads = customHorizonWellGroup.children.filter(c => c.userData?.isCustomHorizonWellhead);
+    if (wellheads.length === 0) return null;
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
+    const hits = raycaster.intersectObjects(wellheads, false);
+    if (hits.length === 0) return null;
+    const wellId = hits[0]?.object?.userData?.customHorizonWellId;
+    if (typeof wellId !== 'string' || !wellId) return null;
+    return { wellId, point: hits[0].point.clone() };
+}
+
+function hitCustomWellPathAtClientPoint(clientX, clientY) {
+    const pathMeshes = customHorizonWellGroup.children.filter(c =>
+        c.userData?.isCustomHorizonWell &&
+        !c.userData?.isCustomHorizonWellhead
+    );
+    if (pathMeshes.length === 0) return null;
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
+    const hits = raycaster.intersectObjects(pathMeshes, false);
+    if (hits.length === 0) return null;
+    const wellId = hits[0]?.object?.userData?.customHorizonWellId;
+    if (typeof wellId !== 'string' || !wellId) return null;
+    return { wellId };
+}
+
+let _customWellheadDragState = null; // { wellId, plane, grabOffset, pointerId }
+
+function finishCustomWellheadDrag(persist) {
+    if (!_customWellheadDragState) return;
+    if (typeof _customWellheadDragState.pointerId === 'number' && renderer.domElement.hasPointerCapture?.(_customWellheadDragState.pointerId)) {
+        renderer.domElement.releasePointerCapture(_customWellheadDragState.pointerId);
+    }
+    _customWellheadDragState = null;
+    controls.enabled = true;
+    renderer.domElement.style.cursor = '';
+    if (persist) persistCustomHorizonWellsToStorage();
+    rebuildCustomHorizonWellControllers();
+}
+
 renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (e.button === 0) {
+        const hit = hitCustomWellheadAtClientPoint(e.clientX, e.clientY);
+        if (hit) {
+            const well = getCustomHorizonWellById(hit.wellId);
+            if (well) {
+                const headWorld = wellGroup.localToWorld(new THREE.Vector3(
+                    Number(well.headLocal?.x) || 0,
+                    Number(well.headLocal?.y) || 0,
+                    Number(well.headLocal?.z) || 0
+                ));
+                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -headWorld.y);
+                const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+                const onPlane = new THREE.Vector3();
+                if (raycaster.ray.intersectPlane(plane, onPlane)) {
+                    _customWellheadDragState = {
+                        wellId: hit.wellId,
+                        plane,
+                        grabOffset: headWorld.clone().sub(onPlane),
+                        pointerId: e.pointerId,
+                    };
+                    renderer.domElement.setPointerCapture?.(e.pointerId);
+                    controls.enabled = false;
+                    renderer.domElement.style.cursor = 'grabbing';
+                }
+            }
+            return;
+        }
+    }
+
     if (e.button !== 2) return;
     _rightClickDownPoint = { x: e.clientX, y: e.clientY };
     _rightClickWasDrag = false;
@@ -4938,6 +6012,23 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (e) => {
+    if (_customWellheadDragState) {
+        const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+        const point = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(_customWellheadDragState.plane, point)) {
+            const well = getCustomHorizonWellById(_customWellheadDragState.wellId);
+            if (well) {
+                const newHeadWorld = point.add(_customWellheadDragState.grabOffset);
+                const newHeadLocal = wellGroup.worldToLocal(newHeadWorld.clone());
+                well.headLocal.x = newHeadLocal.x;
+                well.headLocal.y = newHeadLocal.y;
+                well.headLocal.z = newHeadLocal.z;
+                rebuildCustomHorizonWells();
+            }
+        }
+        return;
+    }
+
     if (!_rightClickDownPoint) return;
     const dx = e.clientX - _rightClickDownPoint.x;
     const dy = e.clientY - _rightClickDownPoint.y;
@@ -4947,6 +6038,10 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.button === 0 && _customWellheadDragState) {
+        finishCustomWellheadDrag(true);
+        return;
+    }
     if (e.button !== 2) return;
     _rightClickDownPoint = null;
 });
@@ -4956,7 +6051,8 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
 
     const saveModal = document.getElementById('saveModal');
     const deleteModal = document.getElementById('deleteModal');
-    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex') {
+    const createWellModal = document.getElementById('createWellModal');
+    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex' || createWellModal?.style.display === 'flex') {
         hideCustomTargetContextMenu();
         return;
     }
@@ -4975,8 +6071,23 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
                 onSelect: () => promptRenameCustomTarget(targetHit.targetId),
             },
             {
+                label: 'Create well',
+                onSelect: () => openCreateCustomHorizonWellModal([targetHit.targetId]),
+            },
+            {
                 label: 'Delete target',
                 onSelect: () => removeCustomTargetById(targetHit.targetId),
+            },
+        ]);
+        return;
+    }
+
+    const wellPathHit = hitCustomWellPathAtClientPoint(e.clientX, e.clientY);
+    if (wellPathHit) {
+        showCustomTargetContextMenu(e.clientX, e.clientY, [
+            {
+                label: 'Duplicate well',
+                onSelect: () => duplicateCustomHorizonWellById(wellPathHit.wellId),
             },
         ]);
         return;
@@ -5002,6 +6113,7 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
 });
 
 renderer.domElement.addEventListener('pointercancel', () => {
+    finishCustomWellheadDrag(false);
     _rightClickDownPoint = null;
     _rightClickWasDrag = false;
     hideCustomTargetContextMenu();
