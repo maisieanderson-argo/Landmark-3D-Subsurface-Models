@@ -40,6 +40,28 @@ document.addEventListener('wheel', (e) => {
     }
 }, { passive: false, capture: true });
 
+// For lil-gui numeric controls: keep real-time visual updates while scrubbing sliders,
+// but defer updates during text entry until finish to avoid focus/scroll jumps.
+function bindSliderRealtime(controller, onScrub, onCommit = onScrub) {
+    if (!controller) return controller;
+    const isTypingInController = () => {
+        const active = document.activeElement;
+        return (
+            active instanceof HTMLInputElement &&
+            (active.type === 'number' || active.type === 'text') &&
+            controller.domElement?.contains(active)
+        );
+    };
+    controller.onChange((v) => {
+        if (isTypingInController()) return;
+        onScrub(v);
+    });
+    controller.onFinishChange((v) => {
+        onCommit(v);
+    });
+    return controller;
+}
+
 // Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -118,6 +140,10 @@ modelGroup.add(wellGroup);
 // Custom horizon wells live under the well group so they share position/scale transforms.
 const customHorizonWellGroup = new THREE.Group();
 wellGroup.add(customHorizonWellGroup);
+const customSurfaceNetworkGroup = new THREE.Group();
+wellGroup.add(customSurfaceNetworkGroup);
+const customTieBackLineGroup = new THREE.Group();
+wellGroup.add(customTieBackLineGroup);
 
 // Custom horizon targets are rendered in world space (outside survey groups)
 // so they never get pulled into horizon/fault colouring passes.
@@ -852,7 +878,7 @@ function buildWellTrajectories() {
     // Clear existing built-in well meshes but preserve custom horizon wells group.
     for (let i = wellGroup.children.length - 1; i >= 0; i--) {
         const c = wellGroup.children[i];
-        if (c === customHorizonWellGroup) continue;
+        if (c === customHorizonWellGroup || c === customSurfaceNetworkGroup || c === customTieBackLineGroup) continue;
         wellGroup.remove(c);
         c.traverse?.((obj) => {
             obj.geometry?.dispose();
@@ -1215,6 +1241,14 @@ let customHorizonWellFolder = null;
 let customHorizonWellCreateCtrl = null;
 let customHorizonWellDeleteAllCtrl = null;
 let customHorizonWellRowFolders = [];
+let customSurfaceNetworkFolder = null;
+let customSurfaceNetworkCreateCtrl = null;
+let customSurfaceNetworkDeleteAllCtrl = null;
+let customSurfaceNetworkRowFolders = [];
+let customTieBackLineFolder = null;
+let customTieBackLineCreateCtrl = null;
+let customTieBackLineDeleteAllCtrl = null;
+let customTieBackLineRowFolders = [];
 
 const customTargetUi = {
     deleteAll: () => clearAllCustomTargets(),
@@ -1432,27 +1466,56 @@ function rebuildCustomTargetControllers() {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'size', 5, 200, 1).name('Size (m)').onFinishChange(() => {
-            rebuildCustomTargets();
-            persistCustomTargetsToStorage();
-        });
-        rowFolder.add(rowOpacityModel, 'opacityPct', 5, 100, 1).name('Opacity (%)').onFinishChange((v) => {
-            const pct = Math.max(5, Math.min(100, Number(v) || 65));
-            rowOpacityModel.opacityPct = pct;
-            target.opacity = pct / 100;
-            rebuildCustomTargets();
-            persistCustomTargetsToStorage();
-        });
-        rowFolder.add(target, 'offsetEastM', -5000, 5000, 1).name('East/West (m)').onFinishChange(() => {
-            rebuildCustomTargets();
-            rebuildCustomHorizonWells();
-            persistCustomTargetsToStorage();
-        });
-        rowFolder.add(target, 'offsetNorthM', -5000, 5000, 1).name('North/South (m)').onFinishChange(() => {
-            rebuildCustomTargets();
-            rebuildCustomHorizonWells();
-            persistCustomTargetsToStorage();
-        });
+        bindSliderRealtime(
+            rowFolder.add(target, 'size', 5, 200, 1).name('Size (m)'),
+            () => {
+                rebuildCustomTargets();
+            },
+            () => {
+                rebuildCustomTargets();
+                persistCustomTargetsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(rowOpacityModel, 'opacityPct', 5, 100, 1).name('Opacity (%)'),
+            (v) => {
+                const pct = Math.max(5, Math.min(100, Number(v) || 65));
+                rowOpacityModel.opacityPct = pct;
+                target.opacity = pct / 100;
+                rebuildCustomTargets();
+            },
+            (v) => {
+                const pct = Math.max(5, Math.min(100, Number(v) || 65));
+                rowOpacityModel.opacityPct = pct;
+                target.opacity = pct / 100;
+                rebuildCustomTargets();
+                persistCustomTargetsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(target, 'offsetEastM', -5000, 5000, 1).name('East/West (m)'),
+            () => {
+                rebuildCustomTargets();
+                rebuildCustomHorizonWells();
+            },
+            () => {
+                rebuildCustomTargets();
+                rebuildCustomHorizonWells();
+                persistCustomTargetsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(target, 'offsetNorthM', -5000, 5000, 1).name('North/South (m)'),
+            () => {
+                rebuildCustomTargets();
+                rebuildCustomHorizonWells();
+            },
+            () => {
+                rebuildCustomTargets();
+                rebuildCustomHorizonWells();
+                persistCustomTargetsToStorage();
+            }
+        );
         const rowActions = {
             deleteTarget: () => removeCustomTargetById(target.id),
         };
@@ -1643,6 +1706,7 @@ function renameCustomHorizonWellById(wellId, proposedName) {
     well.name = uniqueName;
     rebuildCustomHorizonWellSerial();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     persistCustomHorizonWellsToStorage();
     return uniqueName;
 }
@@ -1779,7 +1843,10 @@ function buildCustomWellPathCurve(well, targetWorldPoints) {
 
 function rebuildCustomHorizonWells() {
     clearCustomHorizonWellMeshes();
-    if (customHorizonWells.length === 0) return;
+    if (customHorizonWells.length === 0) {
+        rebuildCustomSurfaceNetworks();
+        return;
+    }
 
     let mutated = false;
     let needsControllerRefresh = false;
@@ -1887,6 +1954,7 @@ function rebuildCustomHorizonWells() {
         persistCustomHorizonWellsToStorage();
         if (needsControllerRefresh) rebuildCustomHorizonWellControllers();
     }
+    rebuildCustomSurfaceNetworks();
 }
 
 function removeCustomHorizonWellById(wellId) {
@@ -1896,6 +1964,7 @@ function removeCustomHorizonWellById(wellId) {
     rebuildCustomHorizonWellSerial();
     rebuildCustomHorizonWells();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     persistCustomHorizonWellsToStorage();
 }
 
@@ -1933,6 +2002,7 @@ function duplicateCustomHorizonWellById(wellId) {
     customHorizonWells.push(duplicated);
     rebuildCustomHorizonWells();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     persistCustomHorizonWellsToStorage();
     return duplicated.id;
 }
@@ -1942,6 +2012,7 @@ function clearAllCustomHorizonWells() {
     rebuildCustomHorizonWellSerial();
     rebuildCustomHorizonWells();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     persistCustomHorizonWellsToStorage();
 }
 
@@ -1985,6 +2056,7 @@ function createCustomHorizonWellFromTargetIds(targetIds) {
     customHorizonWells.push(well);
     rebuildCustomHorizonWells();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     persistCustomHorizonWellsToStorage();
     return well.id;
 }
@@ -2102,6 +2174,7 @@ function setCustomHorizonWellsFromData(wells, options = {}) {
     rebuildCustomHorizonWellSerial();
     rebuildCustomHorizonWells();
     rebuildCustomHorizonWellControllers();
+    rebuildCustomTieBackLineControllers();
     if (persist) persistCustomHorizonWellsToStorage();
 }
 
@@ -2164,37 +2237,73 @@ function rebuildCustomHorizonWellControllers() {
             rebuildCustomHorizonWells();
             persistCustomHorizonWellsToStorage();
         });
-        rowFolder.add(well, 'kickoffDepthM', 50, 8000, 10).name('Kickoff Depth (m)').onFinishChange(() => {
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
-        rowFolder.add(well, 'doglegSeverity', 1, 20, 0.1).name('Dogleg Severity').onFinishChange(() => {
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
+        bindSliderRealtime(
+            rowFolder.add(well, 'kickoffDepthM', 50, 8000, 10).name('Kickoff Depth (m)'),
+            () => {
+                rebuildCustomHorizonWells();
+            },
+            () => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(well, 'doglegSeverity', 1, 20, 0.1).name('Dogleg Severity'),
+            () => {
+                rebuildCustomHorizonWells();
+            },
+            () => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
         const headPosModel = {
             headEastWestM: Number(well.headLocal?.x) || 0,
             headHeightM: Number(well.headLocal?.y) || 0,
             headNorthSouthM: -(Number(well.headLocal?.z) || 0),
         };
-        rowFolder.add(headPosModel, 'headEastWestM', -25000, 25000, 1).name('Head East/West (m)').onFinishChange((v) => {
-            well.headLocal.x = Number(v) || 0;
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
-        rowFolder.add(headPosModel, 'headHeightM', -5000, 5000, 10).name('Head Height (m)').onFinishChange((v) => {
-            const requestedY = Number(v) || 0;
-            const minHeadY = -(Math.max(50, Number(well.kickoffDepthM) || 1500)) + 1;
-            well.headLocal.y = Math.max(requestedY, minHeadY);
-            headPosModel.headHeightM = well.headLocal.y;
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
-        rowFolder.add(headPosModel, 'headNorthSouthM', -25000, 25000, 1).name('Head North/South (m)').onFinishChange((v) => {
-            well.headLocal.z = -(Number(v) || 0);
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
+        bindSliderRealtime(
+            rowFolder.add(headPosModel, 'headEastWestM', -25000, 25000, 1).name('Head East/West (m)'),
+            (v) => {
+                well.headLocal.x = Number(v) || 0;
+                rebuildCustomHorizonWells();
+            },
+            (v) => {
+                well.headLocal.x = Number(v) || 0;
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(headPosModel, 'headHeightM', -5000, 5000, 10).name('Head Height (m)'),
+            (v) => {
+                const requestedY = Number(v) || 0;
+                const minHeadY = -(Math.max(50, Number(well.kickoffDepthM) || 1500)) + 1;
+                well.headLocal.y = Math.max(requestedY, minHeadY);
+                headPosModel.headHeightM = well.headLocal.y;
+                rebuildCustomHorizonWells();
+            },
+            (v) => {
+                const requestedY = Number(v) || 0;
+                const minHeadY = -(Math.max(50, Number(well.kickoffDepthM) || 1500)) + 1;
+                well.headLocal.y = Math.max(requestedY, minHeadY);
+                headPosModel.headHeightM = well.headLocal.y;
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(headPosModel, 'headNorthSouthM', -25000, 25000, 1).name('Head North/South (m)'),
+            (v) => {
+                well.headLocal.z = -(Number(v) || 0);
+                rebuildCustomHorizonWells();
+            },
+            (v) => {
+                well.headLocal.z = -(Number(v) || 0);
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
         rowFolder.add(well, 'pathStyle', ['tube', 'dots']).name('Path Style').onChange(() => {
             rebuildCustomHorizonWells();
             rebuildCustomHorizonWellControllers();
@@ -2213,38 +2322,74 @@ function rebuildCustomHorizonWellControllers() {
                 persistCustomHorizonWellsToStorage();
             });
             if (well.dotSizingMode === 'grows_with_depth') {
-                rowFolder.add(well, 'dotStartSize', 0.5, 30, 0.5).name('Starting Dot Size (m)').onFinishChange(() => {
-                    rebuildCustomHorizonWells();
-                    persistCustomHorizonWellsToStorage();
-                });
-                rowFolder.add(well, 'dotEndSize', 0.5, 30, 0.5).name('End Dot Size (m)').onFinishChange(() => {
-                    rebuildCustomHorizonWells();
-                    persistCustomHorizonWellsToStorage();
-                });
+                bindSliderRealtime(
+                    rowFolder.add(well, 'dotStartSize', 0.5, 30, 0.5).name('Starting Dot Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
+                bindSliderRealtime(
+                    rowFolder.add(well, 'dotEndSize', 0.5, 30, 0.5).name('End Dot Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
             } else {
-                rowFolder.add(well, 'dotSize', 1, 15, 0.5).name('Dot Size (m)').onFinishChange(() => {
+                bindSliderRealtime(
+                    rowFolder.add(well, 'dotSize', 1, 15, 0.5).name('Dot Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
+            }
+            bindSliderRealtime(
+                rowFolder.add(well, 'dotSpacing', 5, 100, 1).name('Dot Spacing (m)'),
+                () => {
+                    rebuildCustomHorizonWells();
+                },
+                () => {
                     rebuildCustomHorizonWells();
                     persistCustomHorizonWellsToStorage();
-                });
-            }
-            rowFolder.add(well, 'dotSpacing', 5, 100, 1).name('Dot Spacing (m)').onFinishChange(() => {
-                rebuildCustomHorizonWells();
-                persistCustomHorizonWellsToStorage();
-            });
+                }
+            );
         } else {
-            rowFolder.add(well, 'tubeRadius', 1, 30, 1).name('Tube Radius (m)').onFinishChange(() => {
-                rebuildCustomHorizonWells();
-                persistCustomHorizonWellsToStorage();
-            });
+            bindSliderRealtime(
+                rowFolder.add(well, 'tubeRadius', 1, 30, 1).name('Tube Radius (m)'),
+                () => {
+                    rebuildCustomHorizonWells();
+                },
+                () => {
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                }
+            );
         }
         rowFolder.add(well, 'showWellhead').name('Show Wellhead').onChange(() => {
             rebuildCustomHorizonWells();
             persistCustomHorizonWellsToStorage();
         });
-        rowFolder.add(well, 'wellheadScale', 0.2, 5, 0.1).name('Wellhead Scale').onFinishChange(() => {
-            rebuildCustomHorizonWells();
-            persistCustomHorizonWellsToStorage();
-        });
+        bindSliderRealtime(
+            rowFolder.add(well, 'wellheadScale', 0.2, 5, 0.1).name('Wellhead Scale'),
+            () => {
+                rebuildCustomHorizonWells();
+            },
+            () => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            }
+        );
         const orderTargetIds = orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id));
         if (orderTargetIds.length > 1) {
             const orderOptions = {};
@@ -2267,6 +2412,1509 @@ function rebuildCustomHorizonWellControllers() {
         };
         rowFolder.add(rowActions, 'deleteWell').name('Delete');
         customHorizonWellRowFolders.push(rowFolder);
+    });
+
+    if (guiRoot) {
+        requestAnimationFrame(() => {
+            guiRoot.scrollTop = prevScrollTop;
+        });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM SURFACE NETWORKS
+// ─────────────────────────────────────────────────────────────
+const customSurfaceNetworks = []; // { id, name, local:{x,y,z}, scale, bodyHeightM, topWidthM, topLengthM, bottomWidthM, bottomLengthM, fillColor, strokeColor, fillOpacity, visible, showRisers, showRiserBase, riserBaseHeightM, riserColor, riserThicknessM, riserSpreadM, riserBaseFillColor, riserBaseStrokeColor, riserBaseFillOpacity, showConnectingPipe, pipeBaseHeightM, pipeColor, pipeThicknessM }
+let customSurfaceNetworkSerial = 1;
+
+const customSurfaceNetworkUi = {
+    createNewNetwork: () => createCustomSurfaceNetwork(),
+    deleteAll: () => clearAllCustomSurfaceNetworks(),
+};
+let tieBackLinePickerTargetLineId = null;
+let tieBackLinePickerSelectedNetworkId = '';
+let tieBackLinePickerSelectedWellIds = new Set();
+
+function orderedUniqueCustomWellIds(wellIds) {
+    const out = [];
+    const seen = new Set();
+    for (const id of Array.isArray(wellIds) ? wellIds : []) {
+        if (typeof id !== 'string' || !id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    return out;
+}
+
+function renderTieBackLinePickerWellList() {
+    const listEl = document.getElementById('tieBackLineWellDropdownList');
+    const labelEl = document.getElementById('tieBackLineWellDropdownLabel');
+    if (!listEl || !labelEl) return;
+    listEl.innerHTML = '';
+
+    if (customHorizonWells.length === 0) {
+        labelEl.textContent = 'Select one or more wells';
+        const empty = document.createElement('div');
+        empty.className = 'custom-well-picker-empty';
+        empty.textContent = 'No custom wells available.';
+        listEl.appendChild(empty);
+        return;
+    }
+
+    customHorizonWells.forEach(well => {
+        const row = document.createElement('label');
+        row.className = 'custom-well-picker-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = tieBackLinePickerSelectedWellIds.has(well.id);
+        cb.addEventListener('change', () => {
+            if (cb.checked) tieBackLinePickerSelectedWellIds.add(well.id);
+            else tieBackLinePickerSelectedWellIds.delete(well.id);
+            renderTieBackLinePickerWellList();
+        });
+        const text = document.createElement('span');
+        text.textContent = well.name;
+        row.appendChild(cb);
+        row.appendChild(text);
+        listEl.appendChild(row);
+    });
+
+    const selectedCount = tieBackLinePickerSelectedWellIds.size;
+    labelEl.textContent = selectedCount === 0 ? 'Select one or more wells' : `${selectedCount} selected`;
+}
+
+function renderTieBackLinePickerSurfaceNetworkOptions() {
+    const selectEl = document.getElementById('tieBackLineSurfaceNetworkSelect');
+    if (!(selectEl instanceof HTMLSelectElement)) return;
+    selectEl.innerHTML = '';
+
+    if (customSurfaceNetworks.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No surface networks available';
+        selectEl.appendChild(option);
+        selectEl.value = '';
+        return;
+    }
+
+    customSurfaceNetworks.forEach(network => {
+        const option = document.createElement('option');
+        option.value = network.id;
+        option.textContent = network.name;
+        selectEl.appendChild(option);
+    });
+    if (!customSurfaceNetworks.some(network => network.id === tieBackLinePickerSelectedNetworkId)) {
+        tieBackLinePickerSelectedNetworkId = customSurfaceNetworks[0].id;
+    }
+    selectEl.value = tieBackLinePickerSelectedNetworkId;
+}
+
+function openTieBackLinePickerModal(existingLineId = null) {
+    tieBackLinePickerTargetLineId = existingLineId;
+    const titleEl = document.getElementById('createTieBackLineModalTitle');
+    const confirmBtn = document.getElementById('confirmCreateTieBackLine');
+    if (existingLineId) {
+        const line = getCustomTieBackLineById(existingLineId);
+        if (!line) return;
+        tieBackLinePickerSelectedNetworkId = line.surfaceNetworkId || '';
+        tieBackLinePickerSelectedWellIds = new Set(
+            orderedUniqueCustomWellIds(line.wellIds).filter(id => !!getCustomHorizonWellById(id))
+        );
+        if (titleEl) titleEl.textContent = 'Edit Tie Back Line';
+        if (confirmBtn) confirmBtn.textContent = 'Apply';
+    } else {
+        tieBackLinePickerSelectedNetworkId = customSurfaceNetworks[0]?.id || '';
+        tieBackLinePickerSelectedWellIds = new Set();
+        if (titleEl) titleEl.textContent = 'Create Tie Back Line';
+        if (confirmBtn) confirmBtn.textContent = 'Create';
+    }
+
+    renderTieBackLinePickerSurfaceNetworkOptions();
+    renderTieBackLinePickerWellList();
+    const listEl = document.getElementById('tieBackLineWellDropdownList');
+    if (listEl) listEl.classList.remove('open');
+    const modal = document.getElementById('createTieBackLineModal');
+    if (modal) modal.style.display = 'flex';
+}
+
+function confirmTieBackLinePickerModal() {
+    const networkId = tieBackLinePickerSelectedNetworkId;
+    const wellIds = orderedUniqueCustomWellIds([...tieBackLinePickerSelectedWellIds]).filter(id => !!getCustomHorizonWellById(id));
+    if (!getCustomSurfaceNetworkById(networkId)) {
+        alert('Select a surface network.');
+        return;
+    }
+    if (wellIds.length === 0) {
+        alert('Select at least one custom well.');
+        return;
+    }
+
+    if (tieBackLinePickerTargetLineId) {
+        updateCustomTieBackLineConnections(tieBackLinePickerTargetLineId, networkId, wellIds);
+    } else {
+        createCustomTieBackLine(networkId, wellIds);
+    }
+
+    tieBackLinePickerTargetLineId = null;
+    tieBackLinePickerSelectedNetworkId = '';
+    tieBackLinePickerSelectedWellIds = new Set();
+    const modal = document.getElementById('createTieBackLineModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function nextCustomSurfaceNetworkName() {
+    let name = `Surface Network ${customSurfaceNetworkSerial++}`;
+    while (customSurfaceNetworks.some(n => n.name === name)) {
+        name = `Surface Network ${customSurfaceNetworkSerial++}`;
+    }
+    return name;
+}
+
+function rebuildCustomSurfaceNetworkSerial() {
+    customSurfaceNetworkSerial = 1;
+    customSurfaceNetworks.forEach(n => {
+        const m = /^Surface Network\s+(\d+)$/.exec(n.name || '');
+        if (m) customSurfaceNetworkSerial = Math.max(customSurfaceNetworkSerial, parseInt(m[1], 10) + 1);
+    });
+}
+
+function makeUniqueCustomSurfaceNetworkName(baseName, excludeId = null) {
+    const trimmed = typeof baseName === 'string' ? baseName.trim() : '';
+    if (!trimmed) return null;
+    let uniqueName = trimmed;
+    let suffix = 2;
+    while (customSurfaceNetworks.some(n => n.id !== excludeId && n.name === uniqueName)) {
+        uniqueName = `${trimmed} (${suffix++})`;
+    }
+    return uniqueName;
+}
+
+function renameCustomSurfaceNetworkById(networkId, proposedName) {
+    const network = customSurfaceNetworks.find(n => n.id === networkId);
+    if (!network) return null;
+    const uniqueName = makeUniqueCustomSurfaceNetworkName(proposedName, networkId);
+    if (!uniqueName) return null;
+    if (uniqueName === network.name) return uniqueName;
+    network.name = uniqueName;
+    rebuildCustomSurfaceNetworkSerial();
+    rebuildCustomSurfaceNetworkControllers();
+    rebuildCustomTieBackLineControllers();
+    persistCustomSurfaceNetworksToStorage();
+    return uniqueName;
+}
+
+function readSurfaceNetworkDimensions(raw) {
+    const legacySize = Math.max(10, Number(raw?.sizeM) || Number(raw?.size) || 500);
+    return {
+        scale: Math.max(0.05, Number(raw?.scale) || 1),
+        bodyHeightM: Math.max(10, Number(raw?.bodyHeightM) || legacySize),
+        topWidthM: Math.max(10, Number(raw?.topWidthM) || legacySize),
+        topLengthM: Math.max(10, Number(raw?.topLengthM) || legacySize),
+        bottomWidthM: Math.max(10, Number(raw?.bottomWidthM) || legacySize),
+        bottomLengthM: Math.max(10, Number(raw?.bottomLengthM) || legacySize),
+    };
+}
+
+function readSurfaceNetworkRiserPipeSettings(raw, fallbackBaseHeightM = 0) {
+    const orderedConnectedWells = [];
+    const seenWellIds = new Set();
+    for (const id of Array.isArray(raw?.connectedWellIds) ? raw.connectedWellIds : []) {
+        if (typeof id !== 'string' || !id || seenWellIds.has(id)) continue;
+        seenWellIds.add(id);
+        orderedConnectedWells.push(id);
+    }
+    const tieBackControlPoints = [];
+    const seenTieKeys = new Set();
+    for (const point of Array.isArray(raw?.tieBackControlPoints) ? raw.tieBackControlPoints : []) {
+        if (!point || typeof point.key !== 'string' || !point.key || seenTieKeys.has(point.key)) continue;
+        seenTieKeys.add(point.key);
+        tieBackControlPoints.push({
+            key: point.key,
+            x: Number(point.x) || 0,
+            z: Number(point.z) || 0,
+        });
+    }
+    return {
+        showRisers: raw?.showRisers === true,
+        showRiserBase: raw?.showRiserBase !== false,
+        riserBaseHeightM: Number.isFinite(Number(raw?.riserBaseHeightM))
+            ? Number(raw.riserBaseHeightM)
+            : (Number(fallbackBaseHeightM) || 0),
+        riserColor: typeof raw?.riserColor === 'string' && raw.riserColor
+            ? raw.riserColor
+            : '#d7ffb5',
+        riserThicknessM: Math.max(0.5, Number(raw?.riserThicknessM) || 12),
+        riserSpreadM: Math.max(0, Number(raw?.riserSpreadM) || 0),
+        riserBaseFillColor: typeof raw?.riserBaseFillColor === 'string' && raw.riserBaseFillColor
+            ? raw.riserBaseFillColor
+            : '#1b2731',
+        riserBaseStrokeColor: typeof raw?.riserBaseStrokeColor === 'string' && raw.riserBaseStrokeColor
+            ? raw.riserBaseStrokeColor
+            : '#d7ffb5',
+        riserBaseFillOpacity: Number.isFinite(Number(raw?.riserBaseFillOpacity))
+            ? THREE.MathUtils.clamp(Number(raw.riserBaseFillOpacity), 0, 1)
+            : 0.28,
+        showConnectingPipe: raw?.showConnectingPipe === true,
+        pipeBaseHeightM: Number.isFinite(Number(raw?.pipeBaseHeightM))
+            ? Number(raw.pipeBaseHeightM)
+            : (Number(fallbackBaseHeightM) || 0),
+        pipeColor: typeof raw?.pipeColor === 'string' && raw.pipeColor
+            ? raw.pipeColor
+            : '#ffdd8a',
+        pipeThicknessM: Math.max(0.5, Number(raw?.pipeThicknessM) || 12),
+        connectedWellIds: orderedConnectedWells,
+        showConnectingTieBacks: raw?.showConnectingTieBacks === true,
+        tieBackColor: typeof raw?.tieBackColor === 'string' && raw.tieBackColor
+            ? raw.tieBackColor
+            : '#9be3ff',
+        tieBackThicknessM: Math.max(0.5, Number(raw?.tieBackThicknessM) || 8),
+        tieBackLineStyle: raw?.tieBackLineStyle === 'dashed' ? 'dashed' : 'solid',
+        tieBackDashLengthM: Math.max(1, Number(raw?.tieBackDashLengthM) || 120),
+        tieBackDashSpacingM: Math.max(1, Number(raw?.tieBackDashSpacingM) || 80),
+        tieBackControlPoints,
+    };
+}
+
+const SURFACE_NETWORK_UP = new THREE.Vector3(0, 1, 0);
+
+function createSurfaceNetworkSegmentCylinder(startPoint, endPoint, thicknessM, colorHex) {
+    const start = startPoint.clone();
+    const end = endPoint.clone();
+    const delta = end.clone().sub(start);
+    const height = delta.length();
+    if (height <= 0.5) return null;
+    const radius = Math.max(0.25, (Number(thicknessM) || 1) * 0.5);
+    const geo = new THREE.CylinderGeometry(radius, radius, height, 12, 1, false);
+    const color = new THREE.Color(colorHex || '#ffffff');
+    const mat = new THREE.MeshPhongMaterial({
+        color,
+        emissive: color.clone().multiplyScalar(0.18),
+        shininess: 40,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(start).add(end).multiplyScalar(0.5);
+    const dir = delta.normalize();
+    mesh.quaternion.setFromUnitVectors(SURFACE_NETWORK_UP, dir);
+    return mesh;
+}
+
+function createSurfaceNetworkFrustumGeometry(topWidthM, topLengthM, bottomWidthM, bottomLengthM, heightM) {
+    const halfTopW = topWidthM * 0.5;
+    const halfTopL = topLengthM * 0.5;
+    const halfBottomW = bottomWidthM * 0.5;
+    const halfBottomL = bottomLengthM * 0.5;
+    const halfH = heightM * 0.5;
+
+    const positions = [
+        -halfTopW, halfH, -halfTopL,   halfTopW, halfH, -halfTopL,   halfTopW, halfH, halfTopL,   -halfTopW, halfH, halfTopL,
+        -halfBottomW, -halfH, -halfBottomL,   halfBottomW, -halfH, -halfBottomL,   halfBottomW, -halfH, halfBottomL,   -halfBottomW, -halfH, halfBottomL,
+    ];
+
+    const indices = [
+        0, 1, 2,  0, 2, 3,      // top
+        4, 6, 5,  4, 7, 6,      // bottom
+        0, 4, 5,  0, 5, 1,      // side 1
+        1, 5, 6,  1, 6, 2,      // side 2
+        2, 6, 7,  2, 7, 3,      // side 3
+        3, 7, 4,  3, 4, 0,      // side 4
+    ];
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+}
+
+function getCustomSurfaceNetworksState() {
+    return customSurfaceNetworks.map(n => ({
+        id: n.id,
+        name: n.name,
+        local: {
+            x: Number(n.local?.x) || 0,
+            y: Number(n.local?.y) || 0,
+            z: Number(n.local?.z) || 0,
+        },
+        scale: Math.max(0.05, Number(n.scale) || 1),
+        bodyHeightM: Math.max(10, Number(n.bodyHeightM) || 500),
+        topWidthM: Math.max(10, Number(n.topWidthM) || 500),
+        topLengthM: Math.max(10, Number(n.topLengthM) || 500),
+        bottomWidthM: Math.max(10, Number(n.bottomWidthM) || 500),
+        bottomLengthM: Math.max(10, Number(n.bottomLengthM) || 500),
+        fillColor: n.fillColor,
+        strokeColor: n.strokeColor,
+        fillOpacity: Number.isFinite(Number(n.fillOpacity)) ? Number(n.fillOpacity) : 0.35,
+        visible: n.visible !== false,
+        showRisers: n.showRisers === true,
+        showRiserBase: n.showRiserBase !== false,
+        riserBaseHeightM: Number.isFinite(Number(n.riserBaseHeightM)) ? Number(n.riserBaseHeightM) : 0,
+        riserColor: n.riserColor,
+        riserThicknessM: Math.max(0.5, Number(n.riserThicknessM) || 12),
+        riserSpreadM: Math.max(0, Number(n.riserSpreadM) || 0),
+        riserBaseFillColor: n.riserBaseFillColor,
+        riserBaseStrokeColor: n.riserBaseStrokeColor,
+        riserBaseFillOpacity: Number.isFinite(Number(n.riserBaseFillOpacity)) ? THREE.MathUtils.clamp(Number(n.riserBaseFillOpacity), 0, 1) : 0.28,
+        showConnectingPipe: n.showConnectingPipe === true,
+        pipeBaseHeightM: Number.isFinite(Number(n.pipeBaseHeightM)) ? Number(n.pipeBaseHeightM) : 0,
+        pipeColor: n.pipeColor,
+        pipeThicknessM: Math.max(0.5, Number(n.pipeThicknessM) || 12),
+    }));
+}
+
+function persistCustomSurfaceNetworksToStorage() {
+    try {
+        localStorage.setItem(CUSTOM_SURFACE_NETWORKS_STORAGE_KEY, JSON.stringify(getCustomSurfaceNetworksState()));
+    } catch (e) {}
+    pushCustomActionHistorySnapshot();
+}
+
+function getCustomSurfaceNetworkById(networkId) {
+    return customSurfaceNetworks.find(n => n.id === networkId) || null;
+}
+
+function getCustomSurfaceNetworkPipeBaseHeightM(network) {
+    if (!network) return 0;
+    if (Number.isFinite(Number(network.pipeBaseHeightM))) return Number(network.pipeBaseHeightM);
+    return Number(network.local?.y) || 0;
+}
+
+function clearCustomSurfaceNetworkMeshes() {
+    while (customSurfaceNetworkGroup.children.length > 0) {
+        const obj = customSurfaceNetworkGroup.children[0];
+        customSurfaceNetworkGroup.remove(obj);
+        obj.traverse?.((child) => {
+            child.geometry?.dispose();
+            if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+            else child.material?.dispose();
+        });
+    }
+}
+
+function rebuildCustomSurfaceNetworks() {
+    clearCustomSurfaceNetworkMeshes();
+    if (customSurfaceNetworks.length === 0) return;
+
+    for (const network of customSurfaceNetworks) {
+        if (network.visible === false) continue;
+
+        const x = Number(network.local?.x) || 0;
+        const y = Number(network.local?.y) || 0;
+        const z = Number(network.local?.z) || 0;
+        const dims = readSurfaceNetworkDimensions(network);
+        const scaledTopWidth = dims.topWidthM * dims.scale;
+        const scaledTopLength = dims.topLengthM * dims.scale;
+        const scaledBottomWidth = dims.bottomWidthM * dims.scale;
+        const scaledBottomLength = dims.bottomLengthM * dims.scale;
+        const scaledHeight = dims.bodyHeightM * dims.scale;
+        const fillColor = new THREE.Color(network.fillColor || '#52d8ff');
+        const strokeColor = new THREE.Color(network.strokeColor || '#ffffff');
+        const rawOpacity = Number(network.fillOpacity);
+        const fillOpacity = Number.isFinite(rawOpacity) ? THREE.MathUtils.clamp(rawOpacity, 0, 1) : 0.35;
+        const riserPipe = readSurfaceNetworkRiserPipeSettings(network, y - scaledHeight * 0.5);
+        const yScale = params.zScale || 1;
+        const yCompensation = 1 / yScale;
+
+        const container = new THREE.Group();
+        container.position.set(x, y, z);
+        container.userData = {
+            isCustomSurfaceNetwork: true,
+            customSurfaceNetworkId: network.id,
+        };
+        const visualsGroup = new THREE.Group();
+        visualsGroup.scale.y = yCompensation;
+        container.add(visualsGroup);
+
+        const fillGeo = createSurfaceNetworkFrustumGeometry(
+            scaledTopWidth,
+            scaledTopLength,
+            scaledBottomWidth,
+            scaledBottomLength,
+            scaledHeight
+        );
+        const fillMat = new THREE.MeshPhongMaterial({
+            color: fillColor,
+            emissive: fillColor.clone().multiplyScalar(0.2),
+            transparent: true,
+            opacity: fillOpacity,
+            depthWrite: fillOpacity >= 0.99,
+        });
+        const cube = new THREE.Mesh(fillGeo, fillMat);
+        cube.userData = {
+            isCustomSurfaceNetwork: true,
+            isCustomSurfaceNetworkBody: true,
+            customSurfaceNetworkId: network.id,
+        };
+        visualsGroup.add(cube);
+
+        const edgeGeo = new THREE.EdgesGeometry(fillGeo);
+        const edgeMat = new THREE.LineBasicMaterial({ color: strokeColor });
+        const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+        edges.userData = {
+            isCustomSurfaceNetwork: true,
+            isCustomSurfaceNetworkBody: true,
+            customSurfaceNetworkId: network.id,
+        };
+        visualsGroup.add(edges);
+
+        const halfBottomW = scaledBottomWidth * 0.5;
+        const halfBottomL = scaledBottomLength * 0.5;
+        const bottomY = -scaledHeight * 0.5;
+        const pipeEndY = (riserPipe.pipeBaseHeightM - y) * yScale;
+
+        if (riserPipe.showRisers) {
+            const riserEndY = (riserPipe.riserBaseHeightM - y) * yScale;
+            const riserSpread = Math.max(0, Number(riserPipe.riserSpreadM) || 0);
+            const corners = [
+                { x: -halfBottomW, z: -halfBottomL },
+                { x: halfBottomW, z: -halfBottomL },
+                { x: halfBottomW, z: halfBottomL },
+                { x: -halfBottomW, z: halfBottomL },
+            ];
+            const riserBasePoints = corners.map(corner => {
+                const dir = new THREE.Vector2(corner.x, corner.z).normalize();
+                return new THREE.Vector3(
+                    corner.x + dir.x * riserSpread,
+                    riserEndY,
+                    corner.z + dir.y * riserSpread
+                );
+            });
+
+            corners.forEach((corner, idx) => {
+                const startPoint = new THREE.Vector3(corner.x, bottomY, corner.z);
+                const endPoint = riserBasePoints[idx];
+                const riser = createSurfaceNetworkSegmentCylinder(
+                    startPoint,
+                    endPoint,
+                    riserPipe.riserThicknessM,
+                    riserPipe.riserColor
+                );
+                if (!riser) return;
+                riser.userData = {
+                    isCustomSurfaceNetwork: true,
+                    isCustomSurfaceNetworkRiser: true,
+                    customSurfaceNetworkId: network.id,
+                };
+                visualsGroup.add(riser);
+            });
+
+            if (riserPipe.showRiserBase !== false) {
+                const baseGeo = new THREE.BufferGeometry();
+                baseGeo.setAttribute(
+                    'position',
+                    new THREE.Float32BufferAttribute(
+                        riserBasePoints.flatMap(p => [p.x, p.y, p.z]),
+                        3
+                    )
+                );
+                baseGeo.setIndex([0, 1, 2, 0, 2, 3]);
+                baseGeo.computeVertexNormals();
+                const baseFillOpacity = Number.isFinite(Number(riserPipe.riserBaseFillOpacity))
+                    ? THREE.MathUtils.clamp(Number(riserPipe.riserBaseFillOpacity), 0, 1)
+                    : 0.28;
+                const baseFill = new THREE.Mesh(
+                    baseGeo,
+                    new THREE.MeshPhongMaterial({
+                        color: new THREE.Color(riserPipe.riserBaseFillColor || '#1b2731'),
+                        emissive: new THREE.Color(riserPipe.riserBaseFillColor || '#1b2731').multiplyScalar(0.15),
+                        transparent: true,
+                        opacity: baseFillOpacity,
+                        depthWrite: baseFillOpacity >= 0.99,
+                        side: THREE.DoubleSide,
+                    })
+                );
+                baseFill.userData = {
+                    isCustomSurfaceNetwork: true,
+                    isCustomSurfaceNetworkRiserBase: true,
+                    customSurfaceNetworkId: network.id,
+                };
+                visualsGroup.add(baseFill);
+
+                const baseOutline = new THREE.LineLoop(
+                    new THREE.BufferGeometry().setFromPoints(riserBasePoints),
+                    new THREE.LineBasicMaterial({
+                        color: new THREE.Color(riserPipe.riserBaseStrokeColor || '#d7ffb5'),
+                    })
+                );
+                baseOutline.userData = {
+                    isCustomSurfaceNetwork: true,
+                    isCustomSurfaceNetworkRiserBase: true,
+                    customSurfaceNetworkId: network.id,
+                };
+                visualsGroup.add(baseOutline);
+            }
+        }
+
+        if (riserPipe.showConnectingPipe) {
+            const pipe = createSurfaceNetworkSegmentCylinder(
+                new THREE.Vector3(0, bottomY, 0),
+                new THREE.Vector3(0, pipeEndY, 0),
+                riserPipe.pipeThicknessM,
+                riserPipe.pipeColor
+            );
+            if (pipe) {
+                pipe.userData = {
+                    isCustomSurfaceNetwork: true,
+                    isCustomSurfaceNetworkPipe: true,
+                    customSurfaceNetworkId: network.id,
+                };
+                visualsGroup.add(pipe);
+            }
+        }
+
+        customSurfaceNetworkGroup.add(container);
+    }
+    rebuildCustomTieBackLines();
+}
+
+function removeCustomSurfaceNetworkById(networkId) {
+    const idx = customSurfaceNetworks.findIndex(n => n.id === networkId);
+    if (idx < 0) return;
+    customSurfaceNetworks.splice(idx, 1);
+    rebuildCustomSurfaceNetworkSerial();
+    rebuildCustomSurfaceNetworks();
+    rebuildCustomSurfaceNetworkControllers();
+    rebuildCustomTieBackLineControllers();
+    persistCustomSurfaceNetworksToStorage();
+}
+
+function clearAllCustomSurfaceNetworks() {
+    customSurfaceNetworks.length = 0;
+    rebuildCustomSurfaceNetworkSerial();
+    rebuildCustomSurfaceNetworks();
+    rebuildCustomSurfaceNetworkControllers();
+    rebuildCustomTieBackLineControllers();
+    persistCustomSurfaceNetworksToStorage();
+}
+
+function createCustomSurfaceNetwork() {
+    const firstWell = customHorizonWells[0] || null;
+    const defaultBaseHeight = Number(firstWell?.headLocal?.y) || 600;
+    const defaultLocal = {
+        x: Number(firstWell?.headLocal?.x) || 0,
+        y: defaultBaseHeight + 300,
+        z: Number(firstWell?.headLocal?.z) || 0,
+    };
+    const network = {
+        id: `csn_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+        name: nextCustomSurfaceNetworkName(),
+        local: defaultLocal,
+        scale: 1,
+        bodyHeightM: 500,
+        topWidthM: 500,
+        topLengthM: 500,
+        bottomWidthM: 500,
+        bottomLengthM: 500,
+        fillColor: '#52d8ff',
+        strokeColor: '#ffffff',
+        fillOpacity: 0.35,
+        visible: true,
+        showRisers: false,
+        showRiserBase: true,
+        riserBaseHeightM: defaultBaseHeight,
+        riserColor: '#d7ffb5',
+        riserThicknessM: 12,
+        riserSpreadM: 0,
+        riserBaseFillColor: '#1b2731',
+        riserBaseStrokeColor: '#d7ffb5',
+        riserBaseFillOpacity: 0.28,
+        showConnectingPipe: false,
+        pipeBaseHeightM: defaultBaseHeight,
+        pipeColor: '#ffdd8a',
+        pipeThicknessM: 12,
+    };
+    customSurfaceNetworks.push(network);
+    rebuildCustomSurfaceNetworks();
+    rebuildCustomSurfaceNetworkControllers();
+    rebuildCustomTieBackLineControllers();
+    persistCustomSurfaceNetworksToStorage();
+    return network.id;
+}
+
+function setCustomSurfaceNetworksFromData(networks, options = {}) {
+    const persist = options.persist === true;
+    customSurfaceNetworks.length = 0;
+    if (Array.isArray(networks)) {
+        networks.forEach((raw, i) => {
+            if (!raw) return;
+            const safeName = typeof raw.name === 'string' && raw.name.trim()
+                ? raw.name.trim()
+                : `Surface Network ${i + 1}`;
+            let uniqueName = safeName;
+            let suffix = 2;
+            while (customSurfaceNetworks.some(n => n.name === uniqueName)) {
+                uniqueName = `${safeName} (${suffix++})`;
+            }
+            customSurfaceNetworks.push({
+                id: typeof raw.id === 'string' && raw.id ? raw.id : `csn_${Date.now()}_${i}`,
+                name: uniqueName,
+                local: {
+                    x: Number(raw.local?.x) || 0,
+                    y: Number(raw.local?.y) || 0,
+                    z: Number(raw.local?.z) || 0,
+                },
+                ...readSurfaceNetworkDimensions(raw),
+                fillColor: typeof raw.fillColor === 'string' && raw.fillColor ? raw.fillColor : '#52d8ff',
+                strokeColor: typeof raw.strokeColor === 'string' && raw.strokeColor ? raw.strokeColor : '#ffffff',
+                fillOpacity: Number.isFinite(Number(raw.fillOpacity)) ? THREE.MathUtils.clamp(Number(raw.fillOpacity), 0, 1) : 0.35,
+                visible: raw.visible !== false,
+                ...readSurfaceNetworkRiserPipeSettings(raw, Number(raw.local?.y) || 0),
+            });
+        });
+    }
+    rebuildCustomSurfaceNetworkSerial();
+    rebuildCustomSurfaceNetworks();
+    rebuildCustomSurfaceNetworkControllers();
+    rebuildCustomTieBackLineControllers();
+    if (persist) persistCustomSurfaceNetworksToStorage();
+}
+
+function loadCustomSurfaceNetworksFromStorage() {
+    const raw = localStorage.getItem(CUSTOM_SURFACE_NETWORKS_STORAGE_KEY);
+    if (!raw) {
+        setCustomSurfaceNetworksFromData([]);
+        return;
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        setCustomSurfaceNetworksFromData(parsed);
+    } catch (e) {
+        setCustomSurfaceNetworksFromData([]);
+    }
+}
+
+function rebuildCustomSurfaceNetworkControllers() {
+    if (!customSurfaceNetworkFolder) return;
+
+    const guiRoot = customSurfaceNetworkFolder.domElement?.closest?.('.lil-gui') || null;
+    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+
+    customSurfaceNetworkRowFolders.forEach(folder => folder.destroy());
+    customSurfaceNetworkRowFolders = [];
+    if (customSurfaceNetworkDeleteAllCtrl) {
+        customSurfaceNetworkDeleteAllCtrl.destroy();
+        customSurfaceNetworkDeleteAllCtrl = null;
+    }
+
+    if (!customSurfaceNetworkCreateCtrl) {
+        customSurfaceNetworkCreateCtrl = customSurfaceNetworkFolder.add(customSurfaceNetworkUi, 'createNewNetwork').name('Create New Surface Network');
+    }
+    if (customSurfaceNetworks.length > 0) {
+        customSurfaceNetworkDeleteAllCtrl = customSurfaceNetworkFolder.add(customSurfaceNetworkUi, 'deleteAll').name('Delete All Surface Networks');
+    }
+
+    customSurfaceNetworks.forEach(network => {
+        const rowFolder = customSurfaceNetworkFolder.addFolder(network.name);
+        _trackFolder(rowFolder, `custom-surface-network:${network.id}`);
+
+        const rowNameModel = { name: network.name };
+        const nameCtrl = rowFolder.add(rowNameModel, 'name').name('Name');
+        nameCtrl.onFinishChange((value) => {
+            const renamed = renameCustomSurfaceNetworkById(network.id, value);
+            if (renamed) return;
+            rowNameModel.name = network.name;
+            nameCtrl.updateDisplay();
+        });
+
+        rowFolder.add(network, 'visible').name('Visible').onChange(() => {
+            rebuildCustomSurfaceNetworks();
+            persistCustomSurfaceNetworksToStorage();
+        });
+        bindSliderRealtime(
+            rowFolder.add(network, 'scale', 0.05, 20, 0.05).name('Scale'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(network, 'bodyHeightM', 10, 5000, 10).name('Body Height (m)'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(network, 'topWidthM', 10, 5000, 10).name('Top Width (m)'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(network, 'topLengthM', 10, 5000, 10).name('Top Length (m)'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(network, 'bottomWidthM', 10, 5000, 10).name('Bottom Width (m)'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(network, 'bottomLengthM', 10, 5000, 10).name('Bottom Length (m)'),
+            () => {
+                rebuildCustomSurfaceNetworks();
+            },
+            () => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        rowFolder.addColor(network, 'fillColor').name('Fill Color').onChange(() => {
+            rebuildCustomSurfaceNetworks();
+            persistCustomSurfaceNetworksToStorage();
+        });
+        rowFolder.addColor(network, 'strokeColor').name('Stroke Color').onChange(() => {
+            rebuildCustomSurfaceNetworks();
+            persistCustomSurfaceNetworksToStorage();
+        });
+        const opacityModel = {
+            fillOpacityPct: Math.round((Number.isFinite(Number(network.fillOpacity)) ? THREE.MathUtils.clamp(Number(network.fillOpacity), 0, 1) : 0.35) * 100),
+        };
+        bindSliderRealtime(
+            rowFolder.add(opacityModel, 'fillOpacityPct', 0, 100, 1).name('Fill Opacity (%)'),
+            (v) => {
+                const pct = THREE.MathUtils.clamp(Number(v) || 0, 0, 100);
+                opacityModel.fillOpacityPct = pct;
+                network.fillOpacity = pct / 100;
+                rebuildCustomSurfaceNetworks();
+            },
+            (v) => {
+                const pct = THREE.MathUtils.clamp(Number(v) || 0, 0, 100);
+                opacityModel.fillOpacityPct = pct;
+                network.fillOpacity = pct / 100;
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+
+        const posModel = {
+            eastWestM: Number(network.local?.x) || 0,
+            northSouthM: -(Number(network.local?.z) || 0),
+            heightM: Number(network.local?.y) || 0,
+        };
+        bindSliderRealtime(
+            rowFolder.add(posModel, 'eastWestM', -25000, 25000, 1).name('East/West (m)'),
+            (v) => {
+                network.local.x = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+            },
+            (v) => {
+                network.local.x = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(posModel, 'northSouthM', -25000, 25000, 1).name('North/South (m)'),
+            (v) => {
+                network.local.z = -(Number(v) || 0);
+                rebuildCustomSurfaceNetworks();
+            },
+            (v) => {
+                network.local.z = -(Number(v) || 0);
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(posModel, 'heightM', -10000, 10000, 10).name('Height in Space (m)'),
+            (v) => {
+                network.local.y = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+            },
+            (v) => {
+                network.local.y = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+
+        rowFolder.add(network, 'showRisers').name('Show Risers').onChange(() => {
+            rebuildCustomSurfaceNetworks();
+            persistCustomSurfaceNetworksToStorage();
+            rebuildCustomSurfaceNetworkControllers();
+        });
+        if (network.showRisers) {
+            rowFolder.add(network, 'showRiserBase').name('Show Riser Base').onChange(() => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+                rebuildCustomSurfaceNetworkControllers();
+            });
+            bindSliderRealtime(
+                rowFolder.add(network, 'riserBaseHeightM', -10000, 10000, 10).name('Riser Base Height (m)'),
+                () => {
+                    rebuildCustomSurfaceNetworks();
+                },
+                () => {
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                }
+            );
+            bindSliderRealtime(
+                rowFolder.add(network, 'riserSpreadM', 0, 5000, 1).name('Riser Spread (m)'),
+                () => {
+                    network.riserSpreadM = Math.max(0, Number(network.riserSpreadM) || 0);
+                    rebuildCustomSurfaceNetworks();
+                },
+                () => {
+                    network.riserSpreadM = Math.max(0, Number(network.riserSpreadM) || 0);
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                }
+            );
+            rowFolder.addColor(network, 'riserColor').name('Riser Color').onChange(() => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            });
+            bindSliderRealtime(
+                rowFolder.add(network, 'riserThicknessM', 0.5, 200, 0.5).name('Riser Thickness (m)'),
+                () => {
+                    network.riserThicknessM = Math.max(0.5, Number(network.riserThicknessM) || 0.5);
+                    rebuildCustomSurfaceNetworks();
+                },
+                () => {
+                    network.riserThicknessM = Math.max(0.5, Number(network.riserThicknessM) || 0.5);
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                }
+            );
+            if (network.showRiserBase !== false) {
+                rowFolder.addColor(network, 'riserBaseFillColor').name('Riser Base Fill Color').onChange(() => {
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                });
+                rowFolder.addColor(network, 'riserBaseStrokeColor').name('Riser Base Stroke Color').onChange(() => {
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                });
+                const riserBaseOpacityModel = {
+                    riserBaseFillOpacityPct: Math.round((Number.isFinite(Number(network.riserBaseFillOpacity))
+                        ? THREE.MathUtils.clamp(Number(network.riserBaseFillOpacity), 0, 1)
+                        : 0.28) * 100),
+                };
+                bindSliderRealtime(
+                    rowFolder.add(riserBaseOpacityModel, 'riserBaseFillOpacityPct', 0, 100, 1).name('Riser Base Fill Opacity (%)'),
+                    (v) => {
+                        const pct = THREE.MathUtils.clamp(Number(v) || 0, 0, 100);
+                        riserBaseOpacityModel.riserBaseFillOpacityPct = pct;
+                        network.riserBaseFillOpacity = pct / 100;
+                        rebuildCustomSurfaceNetworks();
+                    },
+                    (v) => {
+                        const pct = THREE.MathUtils.clamp(Number(v) || 0, 0, 100);
+                        riserBaseOpacityModel.riserBaseFillOpacityPct = pct;
+                        network.riserBaseFillOpacity = pct / 100;
+                        rebuildCustomSurfaceNetworks();
+                        persistCustomSurfaceNetworksToStorage();
+                    }
+                );
+            }
+        }
+
+        rowFolder.add(network, 'showConnectingPipe').name('Show Connecting Pipe').onChange(() => {
+            rebuildCustomSurfaceNetworks();
+            persistCustomSurfaceNetworksToStorage();
+            rebuildCustomSurfaceNetworkControllers();
+        });
+        if (network.showConnectingPipe) {
+            bindSliderRealtime(
+                rowFolder.add(network, 'pipeBaseHeightM', -10000, 10000, 10).name('Pipe Base Height (m)'),
+                () => {
+                    rebuildCustomSurfaceNetworks();
+                },
+                () => {
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                }
+            );
+            rowFolder.addColor(network, 'pipeColor').name('Pipe Color').onChange(() => {
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            });
+            bindSliderRealtime(
+                rowFolder.add(network, 'pipeThicknessM', 0.5, 200, 0.5).name('Pipe Thickness (m)'),
+                () => {
+                    network.pipeThicknessM = Math.max(0.5, Number(network.pipeThicknessM) || 0.5);
+                    rebuildCustomSurfaceNetworks();
+                },
+                () => {
+                    network.pipeThicknessM = Math.max(0.5, Number(network.pipeThicknessM) || 0.5);
+                    rebuildCustomSurfaceNetworks();
+                    persistCustomSurfaceNetworksToStorage();
+                }
+            );
+        }
+
+        const actions = {
+            deleteNetwork: () => removeCustomSurfaceNetworkById(network.id),
+        };
+        rowFolder.add(actions, 'deleteNetwork').name('Delete');
+        customSurfaceNetworkRowFolders.push(rowFolder);
+    });
+
+    if (guiRoot) {
+        requestAnimationFrame(() => {
+            guiRoot.scrollTop = prevScrollTop;
+        });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM TIE BACK LINES
+// ─────────────────────────────────────────────────────────────
+const customTieBackLines = []; // { id, name, surfaceNetworkId, wellIds, showConnectingTieBacks, tieBackColor, tieBackThicknessM, tieBackLineStyle, tieBackDashLengthM, tieBackDashSpacingM, controlPointsByWellId:[{wellId, points:[{x,z}]}] }
+let customTieBackLineSerial = 1;
+
+const customTieBackLineUi = {
+    createNewTieBackLine: () => openTieBackLinePickerModal(),
+    deleteAll: () => clearAllCustomTieBackLines(),
+};
+
+function nextCustomTieBackLineName() {
+    let name = `Tie Back Line ${customTieBackLineSerial++}`;
+    while (customTieBackLines.some(line => line.name === name)) {
+        name = `Tie Back Line ${customTieBackLineSerial++}`;
+    }
+    return name;
+}
+
+function rebuildCustomTieBackLineSerial() {
+    customTieBackLineSerial = 1;
+    customTieBackLines.forEach(line => {
+        const m = /^Tie Back Line\s+(\d+)$/.exec(line.name || '');
+        if (m) customTieBackLineSerial = Math.max(customTieBackLineSerial, Number.parseInt(m[1], 10) + 1);
+    });
+}
+
+function makeUniqueCustomTieBackLineName(baseName, excludeLineId = null) {
+    const trimmed = typeof baseName === 'string' ? baseName.trim() : '';
+    if (!trimmed) return null;
+    let uniqueName = trimmed;
+    let suffix = 2;
+    while (customTieBackLines.some(line => line.id !== excludeLineId && line.name === uniqueName)) {
+        uniqueName = `${trimmed} (${suffix++})`;
+    }
+    return uniqueName;
+}
+
+function renameCustomTieBackLineById(lineId, proposedName) {
+    const line = customTieBackLines.find(item => item.id === lineId);
+    if (!line) return null;
+    const uniqueName = makeUniqueCustomTieBackLineName(proposedName, lineId);
+    if (!uniqueName) return null;
+    if (uniqueName === line.name) return uniqueName;
+    line.name = uniqueName;
+    rebuildCustomTieBackLineSerial();
+    rebuildCustomTieBackLineControllers();
+    persistCustomTieBackLinesToStorage();
+    return uniqueName;
+}
+
+function getCustomTieBackLineById(lineId) {
+    return customTieBackLines.find(line => line.id === lineId) || null;
+}
+
+function getCustomTieBackLineControlEntry(line, representativeWellId, createIfMissing = false) {
+    if (!line || typeof representativeWellId !== 'string' || !representativeWellId) return null;
+    if (!Array.isArray(line.controlPointsByWellId)) line.controlPointsByWellId = [];
+    let entry = line.controlPointsByWellId.find(item => item && item.wellId === representativeWellId);
+    if (!entry && createIfMissing) {
+        entry = { wellId: representativeWellId, points: [] };
+        line.controlPointsByWellId.push(entry);
+    }
+    if (!entry) return null;
+    if (!Array.isArray(entry.points)) entry.points = [];
+    return entry;
+}
+
+function getCustomTieBackLineControlPoints(line, representativeWellId, createIfMissing = false) {
+    const entry = getCustomTieBackLineControlEntry(line, representativeWellId, createIfMissing);
+    return entry ? entry.points : [];
+}
+
+function insertCustomTieBackLineControlPoint(line, representativeWellId, insertIndex, localX, localZ) {
+    const points = getCustomTieBackLineControlPoints(line, representativeWellId, true);
+    const idx = Math.max(0, Math.min(points.length, Number(insertIndex) || 0));
+    points.splice(idx, 0, {
+        x: Number(localX) || 0,
+        z: Number(localZ) || 0,
+    });
+    return idx;
+}
+
+function setCustomTieBackLineControlPoint(line, representativeWellId, pointIndex, localX, localZ) {
+    const points = getCustomTieBackLineControlPoints(line, representativeWellId, true);
+    const idx = Math.max(0, Math.min(points.length - 1, Number(pointIndex) || 0));
+    if (!points[idx]) return;
+    points[idx].x = Number(localX) || 0;
+    points[idx].z = Number(localZ) || 0;
+}
+
+function sanitizeCustomTieBackLineControlPoints(rawControlPoints) {
+    const out = [];
+    const seenWellIds = new Set();
+    for (const entry of Array.isArray(rawControlPoints) ? rawControlPoints : []) {
+        if (!entry || typeof entry.wellId !== 'string' || !entry.wellId || seenWellIds.has(entry.wellId)) continue;
+        seenWellIds.add(entry.wellId);
+        const points = [];
+        for (const point of Array.isArray(entry.points) ? entry.points : []) {
+            points.push({
+                x: Number(point?.x) || 0,
+                z: Number(point?.z) || 0,
+            });
+        }
+        out.push({
+            wellId: entry.wellId,
+            points,
+        });
+    }
+    return out;
+}
+
+function getCustomTieBackLinesState() {
+    return customTieBackLines.map(line => ({
+        id: line.id,
+        name: line.name,
+        surfaceNetworkId: typeof line.surfaceNetworkId === 'string' ? line.surfaceNetworkId : '',
+        wellIds: orderedUniqueCustomWellIds(line.wellIds),
+        showConnectingTieBacks: line.showConnectingTieBacks !== false,
+        tieBackColor: typeof line.tieBackColor === 'string' && line.tieBackColor ? line.tieBackColor : '#9be3ff',
+        tieBackThicknessM: Math.max(0.5, Number(line.tieBackThicknessM) || 8),
+        tieBackLineStyle: line.tieBackLineStyle === 'dashed' ? 'dashed' : 'solid',
+        tieBackDashLengthM: Math.max(1, Number(line.tieBackDashLengthM) || 120),
+        tieBackDashSpacingM: Math.max(1, Number(line.tieBackDashSpacingM) || 80),
+        controlPointsByWellId: sanitizeCustomTieBackLineControlPoints(line.controlPointsByWellId),
+    }));
+}
+
+function persistCustomTieBackLinesToStorage() {
+    try {
+        localStorage.setItem(CUSTOM_TIE_BACK_LINES_STORAGE_KEY, JSON.stringify(getCustomTieBackLinesState()));
+    } catch (e) {}
+    pushCustomActionHistorySnapshot();
+}
+
+function clearCustomTieBackLineMeshes() {
+    while (customTieBackLineGroup.children.length > 0) {
+        const obj = customTieBackLineGroup.children[0];
+        customTieBackLineGroup.remove(obj);
+        obj.traverse?.((child) => {
+            child.geometry?.dispose();
+            if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+            else child.material?.dispose();
+        });
+    }
+}
+
+function getTieBackLineEndpointClusters(line) {
+    const byPosition = new Map();
+    orderedUniqueCustomWellIds(line.wellIds).forEach(wellId => {
+        const well = getCustomHorizonWellById(wellId);
+        if (!well) return;
+        const head = {
+            x: Number(well.headLocal?.x) || 0,
+            y: Number(well.headLocal?.y) || 0,
+            z: Number(well.headLocal?.z) || 0,
+        };
+        const locationKey = `${head.x.toFixed(3)}|${head.y.toFixed(3)}|${head.z.toFixed(3)}`;
+        if (!byPosition.has(locationKey)) {
+            byPosition.set(locationKey, {
+                head,
+                representativeWellId: wellId,
+                wellIds: [wellId],
+            });
+            return;
+        }
+        const cluster = byPosition.get(locationKey);
+        cluster.wellIds.push(wellId);
+        if (wellId < cluster.representativeWellId) {
+            cluster.representativeWellId = wellId;
+        }
+    });
+    return [...byPosition.values()].sort((a, b) => a.representativeWellId.localeCompare(b.representativeWellId));
+}
+
+function rebuildCustomTieBackLines() {
+    clearCustomTieBackLineMeshes();
+    if (customTieBackLines.length === 0) return;
+
+    let mutated = false;
+    let needsControllerRefresh = false;
+
+    customTieBackLines.forEach(line => {
+        const validWellIds = orderedUniqueCustomWellIds(line.wellIds).filter(id => !!getCustomHorizonWellById(id));
+        if (
+            validWellIds.length !== (Array.isArray(line.wellIds) ? line.wellIds.length : 0) ||
+            validWellIds.some((id, idx) => id !== line.wellIds[idx])
+        ) {
+            line.wellIds = validWellIds;
+            mutated = true;
+            needsControllerRefresh = true;
+        }
+        if (!getCustomSurfaceNetworkById(line.surfaceNetworkId)) {
+            line.surfaceNetworkId = '';
+            mutated = true;
+            needsControllerRefresh = true;
+        }
+
+        if (line.showConnectingTieBacks === false) return;
+        const network = getCustomSurfaceNetworkById(line.surfaceNetworkId);
+        if (!network) return;
+        if (network.visible === false) return;
+
+        const startY = getCustomSurfaceNetworkPipeBaseHeightM(network);
+        const start = new THREE.Vector3(
+            Number(network.local?.x) || 0,
+            startY,
+            Number(network.local?.z) || 0
+        );
+        const clusters = getTieBackLineEndpointClusters(line);
+        const validRepresentativeWellIds = new Set();
+        const tieBackColor = new THREE.Color(line.tieBackColor || '#9be3ff');
+        const tieBackThicknessM = Math.max(0.5, Number(line.tieBackThicknessM) || 8);
+        const tieBackRadius = Math.max(0.25, tieBackThicknessM * 0.5);
+        const tieBackLineStyle = line.tieBackLineStyle === 'dashed' ? 'dashed' : 'solid';
+        const dashLengthM = Math.max(1, Number(line.tieBackDashLengthM) || 120);
+        const dashSpacingM = Math.max(1, Number(line.tieBackDashSpacingM) || 80);
+
+        clusters.forEach(cluster => {
+            validRepresentativeWellIds.add(cluster.representativeWellId);
+            const end = new THREE.Vector3(cluster.head.x, startY, cluster.head.z);
+            if (start.distanceTo(end) <= 1) return;
+
+            const controlPoints = getCustomTieBackLineControlPoints(line, cluster.representativeWellId, false);
+            const points = [start.clone()];
+            controlPoints.forEach(point => {
+                points.push(new THREE.Vector3(
+                    (Number(network.local?.x) || 0) + (Number(point.x) || 0),
+                    startY,
+                    (Number(network.local?.z) || 0) + (Number(point.z) || 0)
+                ));
+            });
+            points.push(end.clone());
+
+            const curve = points.length > 2
+                ? new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5)
+                : new THREE.LineCurve3(points[0], points[1]);
+            const length = Math.max(1, curve.getLength());
+
+            const addSegment = (a, b, segmentIndex) => {
+                const seg = createSurfaceNetworkSegmentCylinder(a, b, tieBackThicknessM, line.tieBackColor);
+                if (!seg) return;
+                seg.userData = {
+                    isCustomTieBackLine: true,
+                    isCustomTieBackLinePath: true,
+                    customTieBackLineId: line.id,
+                    tieBackRepresentativeWellId: cluster.representativeWellId,
+                    tieBackSegmentIndex: segmentIndex,
+                };
+                customTieBackLineGroup.add(seg);
+            };
+
+            if (tieBackLineStyle === 'dashed') {
+                const step = dashLengthM + dashSpacingM;
+                let cursor = 0;
+                let segIdx = 0;
+                while (cursor < length - 0.5) {
+                    const fromL = cursor;
+                    const toL = Math.min(length, cursor + dashLengthM);
+                    if (toL - fromL > 0.5) {
+                        const a = curve.getPointAt(fromL / length);
+                        const b = curve.getPointAt(toL / length);
+                        addSegment(a, b, segIdx++);
+                    }
+                    cursor += step;
+                }
+            } else if (points.length > 2) {
+                const segCount = Math.max(8, Math.round(length / 40));
+                const geo = new THREE.TubeGeometry(curve, segCount, tieBackRadius, 8, false);
+                const mat = new THREE.MeshPhongMaterial({
+                    color: tieBackColor,
+                    emissive: tieBackColor.clone().multiplyScalar(0.14),
+                    shininess: 45,
+                });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.userData = {
+                    isCustomTieBackLine: true,
+                    isCustomTieBackLinePath: true,
+                    customTieBackLineId: line.id,
+                    tieBackRepresentativeWellId: cluster.representativeWellId,
+                };
+                customTieBackLineGroup.add(mesh);
+            } else {
+                addSegment(points[0], points[1], 0);
+            }
+        });
+
+        const sanitizedControlEntries = sanitizeCustomTieBackLineControlPoints(line.controlPointsByWellId)
+            .filter(entry => validRepresentativeWellIds.has(entry.wellId));
+        if (JSON.stringify(sanitizedControlEntries) !== JSON.stringify(line.controlPointsByWellId || [])) {
+            line.controlPointsByWellId = sanitizedControlEntries;
+            mutated = true;
+        }
+    });
+
+    if (mutated) {
+        persistCustomTieBackLinesToStorage();
+        if (needsControllerRefresh) rebuildCustomTieBackLineControllers();
+    }
+}
+
+function getCustomTieBackLineConnectionSummary(line) {
+    const networkName = getCustomSurfaceNetworkById(line.surfaceNetworkId)?.name || 'No surface network';
+    const wellCount = orderedUniqueCustomWellIds(line.wellIds).filter(id => !!getCustomHorizonWellById(id)).length;
+    const wellSummary = wellCount === 0 ? 'None' : `${wellCount} well${wellCount === 1 ? '' : 's'}`;
+    return `${networkName} -> ${wellSummary}`;
+}
+
+function removeCustomTieBackLineById(lineId) {
+    const idx = customTieBackLines.findIndex(line => line.id === lineId);
+    if (idx < 0) return;
+    customTieBackLines.splice(idx, 1);
+    rebuildCustomTieBackLineSerial();
+    rebuildCustomTieBackLines();
+    rebuildCustomTieBackLineControllers();
+    persistCustomTieBackLinesToStorage();
+}
+
+function clearAllCustomTieBackLines() {
+    customTieBackLines.length = 0;
+    rebuildCustomTieBackLineSerial();
+    rebuildCustomTieBackLines();
+    rebuildCustomTieBackLineControllers();
+    persistCustomTieBackLinesToStorage();
+}
+
+function createCustomTieBackLine(surfaceNetworkId, wellIds) {
+    const network = getCustomSurfaceNetworkById(surfaceNetworkId);
+    const validWellIds = orderedUniqueCustomWellIds(wellIds).filter(id => !!getCustomHorizonWellById(id));
+    if (!network || validWellIds.length === 0) return null;
+    const line = {
+        id: `ctbl_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+        name: nextCustomTieBackLineName(),
+        surfaceNetworkId,
+        wellIds: validWellIds,
+        showConnectingTieBacks: true,
+        tieBackColor: '#9be3ff',
+        tieBackThicknessM: 8,
+        tieBackLineStyle: 'solid',
+        tieBackDashLengthM: 120,
+        tieBackDashSpacingM: 80,
+        controlPointsByWellId: [],
+    };
+    customTieBackLines.push(line);
+    rebuildCustomTieBackLines();
+    rebuildCustomTieBackLineControllers();
+    persistCustomTieBackLinesToStorage();
+    return line.id;
+}
+
+function updateCustomTieBackLineConnections(lineId, surfaceNetworkId, wellIds) {
+    const line = getCustomTieBackLineById(lineId);
+    const network = getCustomSurfaceNetworkById(surfaceNetworkId);
+    const validWellIds = orderedUniqueCustomWellIds(wellIds).filter(id => !!getCustomHorizonWellById(id));
+    if (!line || !network || validWellIds.length === 0) return;
+    line.surfaceNetworkId = surfaceNetworkId;
+    line.wellIds = validWellIds;
+    if (Array.isArray(line.controlPointsByWellId)) {
+        line.controlPointsByWellId = line.controlPointsByWellId.filter(entry => validWellIds.includes(entry?.wellId));
+    }
+    rebuildCustomTieBackLines();
+    rebuildCustomTieBackLineControllers();
+    persistCustomTieBackLinesToStorage();
+}
+
+function setCustomTieBackLinesFromData(lines, options = {}) {
+    const persist = options.persist === true;
+    customTieBackLines.length = 0;
+    if (Array.isArray(lines)) {
+        lines.forEach((raw, idx) => {
+            if (!raw) return;
+            const baseName = typeof raw.name === 'string' && raw.name.trim()
+                ? raw.name.trim()
+                : `Tie Back Line ${idx + 1}`;
+            let uniqueName = baseName;
+            let suffix = 2;
+            while (customTieBackLines.some(line => line.name === uniqueName)) {
+                uniqueName = `${baseName} (${suffix++})`;
+            }
+            customTieBackLines.push({
+                id: typeof raw.id === 'string' && raw.id ? raw.id : `ctbl_${Date.now()}_${idx}`,
+                name: uniqueName,
+                surfaceNetworkId: typeof raw.surfaceNetworkId === 'string' ? raw.surfaceNetworkId : '',
+                wellIds: orderedUniqueCustomWellIds(raw.wellIds),
+                showConnectingTieBacks: raw.showConnectingTieBacks !== false,
+                tieBackColor: typeof raw.tieBackColor === 'string' && raw.tieBackColor ? raw.tieBackColor : '#9be3ff',
+                tieBackThicknessM: Math.max(0.5, Number(raw.tieBackThicknessM) || 8),
+                tieBackLineStyle: raw.tieBackLineStyle === 'dashed' ? 'dashed' : 'solid',
+                tieBackDashLengthM: Math.max(1, Number(raw.tieBackDashLengthM) || 120),
+                tieBackDashSpacingM: Math.max(1, Number(raw.tieBackDashSpacingM) || 80),
+                controlPointsByWellId: sanitizeCustomTieBackLineControlPoints(raw.controlPointsByWellId),
+            });
+        });
+    }
+    rebuildCustomTieBackLineSerial();
+    rebuildCustomTieBackLines();
+    rebuildCustomTieBackLineControllers();
+    if (persist) persistCustomTieBackLinesToStorage();
+}
+
+function loadCustomTieBackLinesFromStorage() {
+    const raw = localStorage.getItem(CUSTOM_TIE_BACK_LINES_STORAGE_KEY);
+    if (!raw) {
+        const legacy = customSurfaceNetworks
+            .filter(network =>
+                Array.isArray(network.connectedWellIds) &&
+                network.connectedWellIds.length > 0
+            )
+            .map((network, idx) => ({
+                id: `ctbl_legacy_${Date.now()}_${idx}`,
+                name: `Tie Back Line ${idx + 1}`,
+                surfaceNetworkId: network.id,
+                wellIds: orderedUniqueCustomWellIds(network.connectedWellIds),
+                showConnectingTieBacks: network.showConnectingTieBacks !== false,
+                tieBackColor: typeof network.tieBackColor === 'string' && network.tieBackColor ? network.tieBackColor : '#9be3ff',
+                tieBackThicknessM: Math.max(0.5, Number(network.tieBackThicknessM) || 8),
+                tieBackLineStyle: network.tieBackLineStyle === 'dashed' ? 'dashed' : 'solid',
+                tieBackDashLengthM: Math.max(1, Number(network.tieBackDashLengthM) || 120),
+                tieBackDashSpacingM: Math.max(1, Number(network.tieBackDashSpacingM) || 80),
+                controlPointsByWellId: [],
+            }));
+        if (legacy.length > 0) {
+            setCustomTieBackLinesFromData(legacy, { persist: true });
+        } else {
+            setCustomTieBackLinesFromData([]);
+        }
+        return;
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        setCustomTieBackLinesFromData(parsed);
+    } catch (e) {
+        setCustomTieBackLinesFromData([]);
+    }
+}
+
+function rebuildCustomTieBackLineControllers() {
+    if (!customTieBackLineFolder) return;
+
+    const guiRoot = customTieBackLineFolder.domElement?.closest?.('.lil-gui') || null;
+    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+
+    customTieBackLineRowFolders.forEach(folder => folder.destroy());
+    customTieBackLineRowFolders = [];
+    if (customTieBackLineDeleteAllCtrl) {
+        customTieBackLineDeleteAllCtrl.destroy();
+        customTieBackLineDeleteAllCtrl = null;
+    }
+
+    if (!customTieBackLineCreateCtrl) {
+        customTieBackLineCreateCtrl = customTieBackLineFolder.add(customTieBackLineUi, 'createNewTieBackLine').name('Create New Tie Back Line');
+    }
+    if (customTieBackLines.length > 0) {
+        customTieBackLineDeleteAllCtrl = customTieBackLineFolder.add(customTieBackLineUi, 'deleteAll').name('Delete All Tie Back Lines');
+    }
+
+    customTieBackLines.forEach(line => {
+        const rowFolder = customTieBackLineFolder.addFolder(line.name);
+        _trackFolder(rowFolder, `custom-tie-back-line:${line.id}`);
+
+        const nameModel = { name: line.name };
+        const nameCtrl = rowFolder.add(nameModel, 'name').name('Name');
+        nameCtrl.onFinishChange((value) => {
+            const renamed = renameCustomTieBackLineById(line.id, value);
+            if (renamed) return;
+            nameModel.name = line.name;
+            nameCtrl.updateDisplay();
+        });
+
+        const actions = {
+            configureConnections: () => openTieBackLinePickerModal(line.id),
+            deleteTieBackLine: () => removeCustomTieBackLineById(line.id),
+        };
+        rowFolder.add(actions, 'configureConnections').name(`Connect: ${getCustomTieBackLineConnectionSummary(line)}`);
+
+        rowFolder.add(line, 'showConnectingTieBacks').name('Show Connecting Tie Backs').onChange(() => {
+            rebuildCustomTieBackLines();
+            persistCustomTieBackLinesToStorage();
+            rebuildCustomTieBackLineControllers();
+        });
+        if (line.showConnectingTieBacks !== false) {
+            rowFolder.addColor(line, 'tieBackColor').name('Tie Back Color').onChange(() => {
+                rebuildCustomTieBackLines();
+                persistCustomTieBackLinesToStorage();
+            });
+            bindSliderRealtime(
+                rowFolder.add(line, 'tieBackThicknessM', 0.5, 200, 0.5).name('Tie Back Thickness (m)'),
+                () => {
+                    line.tieBackThicknessM = Math.max(0.5, Number(line.tieBackThicknessM) || 0.5);
+                    rebuildCustomTieBackLines();
+                },
+                () => {
+                    line.tieBackThicknessM = Math.max(0.5, Number(line.tieBackThicknessM) || 0.5);
+                    rebuildCustomTieBackLines();
+                    persistCustomTieBackLinesToStorage();
+                }
+            );
+            rowFolder.add(line, 'tieBackLineStyle', {
+                Solid: 'solid',
+                Dashed: 'dashed',
+            }).name('Tie Back Line Style').onChange((value) => {
+                line.tieBackLineStyle = value === 'dashed' ? 'dashed' : 'solid';
+                rebuildCustomTieBackLines();
+                rebuildCustomTieBackLineControllers();
+                persistCustomTieBackLinesToStorage();
+            });
+            if (line.tieBackLineStyle === 'dashed') {
+                bindSliderRealtime(
+                    rowFolder.add(line, 'tieBackDashLengthM', 1, 2000, 1).name('Dash Length (m)'),
+                    () => {
+                        line.tieBackDashLengthM = Math.max(1, Number(line.tieBackDashLengthM) || 1);
+                        rebuildCustomTieBackLines();
+                    },
+                    () => {
+                        line.tieBackDashLengthM = Math.max(1, Number(line.tieBackDashLengthM) || 1);
+                        rebuildCustomTieBackLines();
+                        persistCustomTieBackLinesToStorage();
+                    }
+                );
+                bindSliderRealtime(
+                    rowFolder.add(line, 'tieBackDashSpacingM', 1, 2000, 1).name('Dash Spacing (m)'),
+                    () => {
+                        line.tieBackDashSpacingM = Math.max(1, Number(line.tieBackDashSpacingM) || 1);
+                        rebuildCustomTieBackLines();
+                    },
+                    () => {
+                        line.tieBackDashSpacingM = Math.max(1, Number(line.tieBackDashSpacingM) || 1);
+                        rebuildCustomTieBackLines();
+                        persistCustomTieBackLinesToStorage();
+                    }
+                );
+            }
+        }
+
+        rowFolder.add(actions, 'deleteTieBackLine').name('Delete');
+        customTieBackLineRowFolders.push(rowFolder);
     });
 
     if (guiRoot) {
@@ -2538,6 +4186,24 @@ uiContainer.innerHTML = `
             </div>
         </div>
     </div>
+
+    <!-- Create / Edit Tie Back Line Modal -->
+    <div id="createTieBackLineModal" class="modal-overlay">
+        <div class="modal">
+            <h3 id="createTieBackLineModalTitle">Create Tie Back Line</h3>
+            <select id="tieBackLineSurfaceNetworkSelect" class="preset-select" style="width:100%; margin-bottom:10px;"></select>
+            <div class="custom-well-target-dropdown">
+                <button id="tieBackLineWellDropdownToggle" class="custom-well-target-dropdown-toggle" type="button">
+                    <span id="tieBackLineWellDropdownLabel">Select one or more wells</span>
+                </button>
+                <div id="tieBackLineWellDropdownList" class="custom-well-target-dropdown-list"></div>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-cancel" onclick="closeModal('createTieBackLineModal')">Cancel</button>
+                <button class="btn btn-primary" id="confirmCreateTieBackLine">Create</button>
+            </div>
+        </div>
+    </div>
 `;
 document.body.appendChild(uiContainer);
 
@@ -2586,9 +4252,22 @@ document.getElementById('customWellTargetDropdownToggle')?.addEventListener('cli
     if (!listEl) return;
     listEl.classList.toggle('open');
 });
+document.getElementById('tieBackLineWellDropdownToggle')?.addEventListener('click', () => {
+    const listEl = document.getElementById('tieBackLineWellDropdownList');
+    if (!listEl) return;
+    listEl.classList.toggle('open');
+});
+document.getElementById('tieBackLineSurfaceNetworkSelect')?.addEventListener('change', (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    tieBackLinePickerSelectedNetworkId = target.value || '';
+});
 
 document.getElementById('confirmCreateWell')?.addEventListener('click', () => {
     confirmCreateCustomHorizonWellFromModal();
+});
+document.getElementById('confirmCreateTieBackLine')?.addEventListener('click', () => {
+    confirmTieBackLinePickerModal();
 });
 document.getElementById('btnUndoAction')?.addEventListener('click', () => {
     undoCustomAction();
@@ -2615,6 +4294,17 @@ document.addEventListener('pointerdown', (e) => {
     listEl.classList.remove('open');
 }, true);
 
+document.addEventListener('pointerdown', (e) => {
+    const listEl = document.getElementById('tieBackLineWellDropdownList');
+    const toggleEl = document.getElementById('tieBackLineWellDropdownToggle');
+    if (!listEl || !toggleEl) return;
+    if (!listEl.classList.contains('open')) return;
+    const t = e.target;
+    if (!(t instanceof Node)) return;
+    if (listEl.contains(t) || toggleEl.contains(t)) return;
+    listEl.classList.remove('open');
+}, true);
+
 window.addEventListener('blur', hideCustomTargetContextMenu);
 window.addEventListener('resize', hideCustomTargetContextMenu);
 document.addEventListener('keydown', (e) => {
@@ -2624,7 +4314,19 @@ document.addEventListener('keydown', (e) => {
 
 
 window.closeModal = (id) => {
-    document.getElementById(id).style.display = 'none';
+    const modal = document.getElementById(id);
+    if (modal) modal.style.display = 'none';
+    if (id === 'createTieBackLineModal') {
+        tieBackLinePickerTargetLineId = null;
+        tieBackLinePickerSelectedNetworkId = '';
+        tieBackLinePickerSelectedWellIds = new Set();
+        const listEl = document.getElementById('tieBackLineWellDropdownList');
+        if (listEl) listEl.classList.remove('open');
+        const titleEl = document.getElementById('createTieBackLineModalTitle');
+        if (titleEl) titleEl.textContent = 'Create Tie Back Line';
+        const confirmBtn = document.getElementById('confirmCreateTieBackLine');
+        if (confirmBtn) confirmBtn.textContent = 'Create';
+    }
 };
 
 // ── Title click → hide all UI for clean screenshots ─────────────────────────
@@ -2676,6 +4378,8 @@ const PARAMS_STORAGE_KEY = 'geo_viewer_params';
 const PANEL_STATE_KEY   = 'geo_viewer_panel_state';
 const CUSTOM_TARGETS_STORAGE_KEY = 'geo_custom_horizon_targets';
 const CUSTOM_HORIZON_WELLS_STORAGE_KEY = 'geo_custom_horizon_wells';
+const CUSTOM_SURFACE_NETWORKS_STORAGE_KEY = 'geo_custom_surface_networks';
+const CUSTOM_TIE_BACK_LINES_STORAGE_KEY = 'geo_custom_tie_back_lines';
 const CUSTOM_ACTION_HISTORY_LIMIT = 250;
 
 let customActionHistory = [];
@@ -2687,6 +4391,8 @@ function captureCustomActionState() {
     return {
         targets: getCustomTargetsState(),
         wells: getCustomHorizonWellsState(),
+        surfaceNetworks: getCustomSurfaceNetworksState(),
+        tieBackLines: getCustomTieBackLinesState(),
     };
 }
 
@@ -2758,10 +4464,16 @@ function applyCustomActionState(state) {
     try {
         const targets = Array.isArray(state?.targets) ? state.targets : [];
         const wells = Array.isArray(state?.wells) ? state.wells : [];
+        const surfaceNetworks = Array.isArray(state?.surfaceNetworks) ? state.surfaceNetworks : [];
+        const tieBackLines = Array.isArray(state?.tieBackLines) ? state.tieBackLines : [];
         setCustomTargetsFromData(targets, { persist: false });
         setCustomHorizonWellsFromData(wells, { persist: false });
+        setCustomSurfaceNetworksFromData(surfaceNetworks, { persist: false });
+        setCustomTieBackLinesFromData(tieBackLines, { persist: false });
         try { localStorage.setItem(CUSTOM_TARGETS_STORAGE_KEY, JSON.stringify(getCustomTargetsState())); } catch (e) {}
         try { localStorage.setItem(CUSTOM_HORIZON_WELLS_STORAGE_KEY, JSON.stringify(getCustomHorizonWellsState())); } catch (e) {}
+        try { localStorage.setItem(CUSTOM_SURFACE_NETWORKS_STORAGE_KEY, JSON.stringify(getCustomSurfaceNetworksState())); } catch (e) {}
+        try { localStorage.setItem(CUSTOM_TIE_BACK_LINES_STORAGE_KEY, JSON.stringify(getCustomTieBackLinesState())); } catch (e) {}
     } finally {
         customActionHistoryApplying = false;
     }
@@ -4878,6 +6590,7 @@ vizFolder.add(params, 'zScale', 0.1, 10).name('Vertical Exaggeration').onChange(
     buildWellTrajectories(); // re-counter-scale spheres
     rebuildCustomTargets();
     rebuildCustomHorizonWells();
+    rebuildCustomSurfaceNetworks();
 });
 
 vizFolder.add(params, 'wireframe').onChange((v) => {
@@ -5105,6 +6818,14 @@ customHorizonWellFolder.add(params, 'customHorizonWellDotSpacing', 5, 100, 1).na
 customHorizonWellFolder.add(params, 'customHorizonWellheadVisible').name('New Show Wellhead');
 customHorizonWellFolder.add(params, 'customHorizonWellheadScale', 0.2, 5, 0.1).name('New Wellhead Scale');
 loadCustomHorizonWellsFromStorage();
+
+customSurfaceNetworkFolder = wellFolder.addFolder('Custom Surface Networks');
+_trackFolder(customSurfaceNetworkFolder, 'Custom Surface Networks');
+loadCustomSurfaceNetworksFromStorage();
+customTieBackLineFolder = customSurfaceNetworkFolder.addFolder('Custom Tie Back Lines');
+_trackFolder(customTieBackLineFolder, 'Custom Tie Back Lines');
+loadCustomTieBackLinesFromStorage();
+
 initializeCustomActionHistory();
 
 
@@ -5977,7 +7698,59 @@ function hitCustomWellPathAtClientPoint(clientX, clientY) {
     return { wellId };
 }
 
+function hitCustomSurfaceNetworkAtClientPoint(clientX, clientY) {
+    if (customSurfaceNetworkGroup.children.length === 0) return null;
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
+    const hits = raycaster.intersectObjects(customSurfaceNetworkGroup.children, true);
+    const bodyHit = hits.find(hit => hit?.object?.userData?.isCustomSurfaceNetworkBody);
+    if (!bodyHit) return null;
+    const networkId = bodyHit?.object?.userData?.customSurfaceNetworkId;
+    if (typeof networkId !== 'string' || !networkId) return null;
+    return { networkId, point: bodyHit.point.clone() };
+}
+
+function hitCustomSurfaceNetworkTieBackPathAtClientPoint(clientX, clientY) {
+    if (customTieBackLineGroup.children.length === 0) return null;
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
+    const hits = raycaster.intersectObjects(customTieBackLineGroup.children, true);
+    const pathHit = hits.find(hit => hit?.object?.userData?.isCustomTieBackLinePath);
+    if (!pathHit) return null;
+    const lineId = pathHit?.object?.userData?.customTieBackLineId;
+    const representativeWellId = pathHit?.object?.userData?.tieBackRepresentativeWellId;
+    if (typeof lineId !== 'string' || !lineId) return null;
+    if (typeof representativeWellId !== 'string' || !representativeWellId) return null;
+    return {
+        lineId,
+        representativeWellId,
+        point: pathHit.point.clone(),
+    };
+}
+
+function distancePointToSegmentXZ(point, segStart, segEnd) {
+    const ax = segStart.x;
+    const az = segStart.z;
+    const bx = segEnd.x;
+    const bz = segEnd.z;
+    const px = point.x;
+    const pz = point.z;
+    const vx = bx - ax;
+    const vz = bz - az;
+    const wx = px - ax;
+    const wz = pz - az;
+    const c1 = vx * wx + vz * wz;
+    const c2 = vx * vx + vz * vz;
+    let t = c2 > 1e-6 ? (c1 / c2) : 0;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + vx * t;
+    const cz = az + vz * t;
+    const dx = px - cx;
+    const dz = pz - cz;
+    return Math.sqrt(dx * dx + dz * dz);
+}
+
 let _customWellheadDragState = null; // { wellId, plane, grabOffset, pointerId }
+let _customSurfaceNetworkDragState = null; // { networkId, plane, grabOffset, pointerId }
+let _customTieBackLineControlDragState = null; // { lineId, representativeWellId, controlIndex, plane, grabOffset, pointerId }
 
 function finishCustomWellheadDrag(persist) {
     if (!_customWellheadDragState) return;
@@ -5991,8 +7764,156 @@ function finishCustomWellheadDrag(persist) {
     rebuildCustomHorizonWellControllers();
 }
 
+function finishCustomSurfaceNetworkDrag(persist) {
+    if (!_customSurfaceNetworkDragState) return;
+    if (typeof _customSurfaceNetworkDragState.pointerId === 'number' && renderer.domElement.hasPointerCapture?.(_customSurfaceNetworkDragState.pointerId)) {
+        renderer.domElement.releasePointerCapture(_customSurfaceNetworkDragState.pointerId);
+    }
+    _customSurfaceNetworkDragState = null;
+    controls.enabled = true;
+    renderer.domElement.style.cursor = '';
+    if (persist) persistCustomSurfaceNetworksToStorage();
+    rebuildCustomSurfaceNetworkControllers();
+}
+
+function finishCustomTieBackLineControlDrag(persist) {
+    if (!_customTieBackLineControlDragState) return;
+    if (
+        typeof _customTieBackLineControlDragState.pointerId === 'number' &&
+        renderer.domElement.hasPointerCapture?.(_customTieBackLineControlDragState.pointerId)
+    ) {
+        renderer.domElement.releasePointerCapture(_customTieBackLineControlDragState.pointerId);
+    }
+    _customTieBackLineControlDragState = null;
+    controls.enabled = true;
+    renderer.domElement.style.cursor = '';
+    if (persist) persistCustomTieBackLinesToStorage();
+}
+
 renderer.domElement.addEventListener('pointerdown', (e) => {
     if (e.button === 0) {
+        const tieBackPathHit = hitCustomSurfaceNetworkTieBackPathAtClientPoint(e.clientX, e.clientY);
+        if (tieBackPathHit) {
+            const line = getCustomTieBackLineById(tieBackPathHit.lineId);
+            if (!line) return;
+            const network = getCustomSurfaceNetworkById(line.surfaceNetworkId);
+            if (!network) return;
+            const well = getCustomHorizonWellById(tieBackPathHit.representativeWellId);
+            if (!well) return;
+
+            const startY = getCustomSurfaceNetworkPipeBaseHeightM(network);
+            const start = new THREE.Vector3(
+                Number(network.local?.x) || 0,
+                startY,
+                Number(network.local?.z) || 0
+            );
+            const end = new THREE.Vector3(
+                Number(well.headLocal?.x) || 0,
+                startY,
+                Number(well.headLocal?.z) || 0
+            );
+            const clickWorld = tieBackPathHit.point.clone();
+            clickWorld.y = startY;
+
+            const points = getCustomTieBackLineControlPoints(line, tieBackPathHit.representativeWellId, true);
+            const existingDistances = points.map((pt, idx) => {
+                const px = (Number(network.local?.x) || 0) + (Number(pt.x) || 0);
+                const pz = (Number(network.local?.z) || 0) + (Number(pt.z) || 0);
+                const dx = clickWorld.x - px;
+                const dz = clickWorld.z - pz;
+                return { idx, d: Math.sqrt(dx * dx + dz * dz) };
+            });
+            existingDistances.sort((a, b) => a.d - b.d);
+            const nearestExisting = existingDistances[0] || null;
+            const reuseExistingThreshold = Math.max(12, Number(line.tieBackThicknessM) * 2 || 12);
+
+            let controlIndex = -1;
+            if (nearestExisting && nearestExisting.d <= reuseExistingThreshold) {
+                controlIndex = nearestExisting.idx;
+            } else {
+                const chain = [
+                    start.clone(),
+                    ...points.map(pt => new THREE.Vector3(
+                        (Number(network.local?.x) || 0) + (Number(pt.x) || 0),
+                        startY,
+                        (Number(network.local?.z) || 0) + (Number(pt.z) || 0)
+                    )),
+                    end.clone(),
+                ];
+                let bestSegmentIndex = 0;
+                let bestDistance = Infinity;
+                for (let i = 0; i < chain.length - 1; i++) {
+                    const d = distancePointToSegmentXZ(clickWorld, chain[i], chain[i + 1]);
+                    if (d < bestDistance) {
+                        bestDistance = d;
+                        bestSegmentIndex = i;
+                    }
+                }
+                const insertIdx = Math.max(0, Math.min(points.length, bestSegmentIndex));
+                const clickLocal = wellGroup.worldToLocal(clickWorld.clone());
+                controlIndex = insertCustomTieBackLineControlPoint(
+                    line,
+                    tieBackPathHit.representativeWellId,
+                    insertIdx,
+                    clickLocal.x - (Number(network.local?.x) || 0),
+                    clickLocal.z - (Number(network.local?.z) || 0)
+                );
+            }
+
+            const selectedPoint = getCustomTieBackLineControlPoints(line, tieBackPathHit.representativeWellId, true)[controlIndex];
+            if (!selectedPoint) return;
+            const controlWorld = wellGroup.localToWorld(new THREE.Vector3(
+                (Number(network.local?.x) || 0) + (Number(selectedPoint.x) || 0),
+                startY,
+                (Number(network.local?.z) || 0) + (Number(selectedPoint.z) || 0)
+            ));
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -startY);
+            const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+            const onPlane = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(plane, onPlane)) {
+                _customTieBackLineControlDragState = {
+                    lineId: line.id,
+                    representativeWellId: tieBackPathHit.representativeWellId,
+                    controlIndex,
+                    plane,
+                    grabOffset: controlWorld.clone().sub(onPlane),
+                    pointerId: e.pointerId,
+                };
+                renderer.domElement.setPointerCapture?.(e.pointerId);
+                controls.enabled = false;
+                renderer.domElement.style.cursor = 'grabbing';
+                rebuildCustomTieBackLines();
+            }
+            return;
+        }
+
+        const networkHit = hitCustomSurfaceNetworkAtClientPoint(e.clientX, e.clientY);
+        if (networkHit) {
+            const network = getCustomSurfaceNetworkById(networkHit.networkId);
+            if (network) {
+                const networkWorld = wellGroup.localToWorld(new THREE.Vector3(
+                    Number(network.local?.x) || 0,
+                    Number(network.local?.y) || 0,
+                    Number(network.local?.z) || 0
+                ));
+                const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -networkWorld.y);
+                const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+                const onPlane = new THREE.Vector3();
+                if (raycaster.ray.intersectPlane(plane, onPlane)) {
+                    _customSurfaceNetworkDragState = {
+                        networkId: networkHit.networkId,
+                        plane,
+                        grabOffset: networkWorld.clone().sub(onPlane),
+                        pointerId: e.pointerId,
+                    };
+                    renderer.domElement.setPointerCapture?.(e.pointerId);
+                    controls.enabled = false;
+                    renderer.domElement.style.cursor = 'grabbing';
+                }
+            }
+            return;
+        }
+
         const hit = hitCustomWellheadAtClientPoint(e.clientX, e.clientY);
         if (hit) {
             const well = getCustomHorizonWellById(hit.wellId);
@@ -6028,6 +7949,45 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (e) => {
+    if (_customTieBackLineControlDragState) {
+        const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+        const point = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(_customTieBackLineControlDragState.plane, point)) {
+            const line = getCustomTieBackLineById(_customTieBackLineControlDragState.lineId);
+            if (!line) return;
+            const network = getCustomSurfaceNetworkById(line.surfaceNetworkId);
+            if (!network) return;
+            const nextWorld = point.add(_customTieBackLineControlDragState.grabOffset);
+            const nextLocal = wellGroup.worldToLocal(nextWorld.clone());
+            setCustomTieBackLineControlPoint(
+                line,
+                _customTieBackLineControlDragState.representativeWellId,
+                _customTieBackLineControlDragState.controlIndex,
+                nextLocal.x - (Number(network.local?.x) || 0),
+                nextLocal.z - (Number(network.local?.z) || 0)
+            );
+            rebuildCustomTieBackLines();
+        }
+        return;
+    }
+
+    if (_customSurfaceNetworkDragState) {
+        const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
+        const point = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(_customSurfaceNetworkDragState.plane, point)) {
+            const network = getCustomSurfaceNetworkById(_customSurfaceNetworkDragState.networkId);
+            if (network) {
+                const newWorld = point.add(_customSurfaceNetworkDragState.grabOffset);
+                const newLocal = wellGroup.worldToLocal(newWorld.clone());
+                network.local.x = newLocal.x;
+                network.local.y = newLocal.y;
+                network.local.z = newLocal.z;
+                rebuildCustomSurfaceNetworks();
+            }
+        }
+        return;
+    }
+
     if (_customWellheadDragState) {
         const raycaster = raycasterFromClientPoint(e.clientX, e.clientY);
         const point = new THREE.Vector3();
@@ -6054,6 +8014,14 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.button === 0 && _customTieBackLineControlDragState) {
+        finishCustomTieBackLineControlDrag(true);
+        return;
+    }
+    if (e.button === 0 && _customSurfaceNetworkDragState) {
+        finishCustomSurfaceNetworkDrag(true);
+        return;
+    }
     if (e.button === 0 && _customWellheadDragState) {
         finishCustomWellheadDrag(true);
         return;
@@ -6068,7 +8036,13 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
     const saveModal = document.getElementById('saveModal');
     const deleteModal = document.getElementById('deleteModal');
     const createWellModal = document.getElementById('createWellModal');
-    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex' || createWellModal?.style.display === 'flex') {
+    const createTieBackLineModal = document.getElementById('createTieBackLineModal');
+    if (
+        saveModal?.style.display === 'flex' ||
+        deleteModal?.style.display === 'flex' ||
+        createWellModal?.style.display === 'flex' ||
+        createTieBackLineModal?.style.display === 'flex'
+    ) {
         hideCustomTargetContextMenu();
         return;
     }
@@ -6129,6 +8103,8 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
 });
 
 renderer.domElement.addEventListener('pointercancel', () => {
+    finishCustomTieBackLineControlDrag(false);
+    finishCustomSurfaceNetworkDrag(false);
     finishCustomWellheadDrag(false);
     _rightClickDownPoint = null;
     _rightClickWasDrag = false;
