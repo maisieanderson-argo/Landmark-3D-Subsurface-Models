@@ -25,6 +25,20 @@ container.appendChild(renderer.domElement);
 
 // GUI
 const gui = new GUI();
+// Disable mouse-wheel value changes on lil-gui sliders/number fields.
+// Sliders still work via drag, and number fields still work via typing.
+document.addEventListener('wheel', (e) => {
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    if (!target.closest('.lil-gui')) return;
+    if (
+        target.matches('input[type="range"]') ||
+        target.matches('input[type="number"]') ||
+        !!target.closest('.slider')
+    ) {
+        e.preventDefault();
+    }
+}, { passive: false, capture: true });
 
 // Controls
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -1298,7 +1312,7 @@ function rebuildCustomTargets() {
         });
         const orb = new THREE.Mesh(orbGeo, orbMat);
         orb.position.copy(worldPos);
-        orb.userData = { isCustomTarget: true, targetName: target.name };
+        orb.userData = { isCustomTarget: true, targetId: target.id, targetName: target.name };
         orb.name = `custom-target-${target.name}`;
         customTargetGroup.add(orb);
 
@@ -1314,7 +1328,7 @@ function rebuildCustomTargets() {
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.position.copy(worldPos);
         ring.rotation.x = Math.PI / 2;
-        ring.userData = { isCustomTarget: true, targetName: target.name };
+        ring.userData = { isCustomTarget: true, targetId: target.id, targetName: target.name };
         customTargetGroup.add(ring);
     });
 }
@@ -1327,6 +1341,39 @@ function removeCustomTargetById(targetId) {
     rebuildCustomTargets();
     rebuildCustomTargetControllers();
     persistCustomTargetsToStorage();
+}
+
+function makeUniqueCustomTargetName(baseName, excludeTargetId = null) {
+    const trimmed = typeof baseName === 'string' ? baseName.trim() : '';
+    if (!trimmed) return null;
+    let uniqueName = trimmed;
+    let suffix = 2;
+    while (customTargets.some(t => t.id !== excludeTargetId && t.name === uniqueName)) {
+        uniqueName = `${trimmed} (${suffix++})`;
+    }
+    return uniqueName;
+}
+
+function renameCustomTargetById(targetId, proposedName) {
+    const target = customTargets.find(t => t.id === targetId);
+    if (!target) return null;
+    const uniqueName = makeUniqueCustomTargetName(proposedName, targetId);
+    if (!uniqueName) return null;
+    if (uniqueName === target.name) return uniqueName;
+    target.name = uniqueName;
+    rebuildCustomTargetSerial();
+    rebuildCustomTargets();
+    rebuildCustomTargetControllers();
+    persistCustomTargetsToStorage();
+    return uniqueName;
+}
+
+function promptRenameCustomTarget(targetId) {
+    const target = customTargets.find(t => t.id === targetId);
+    if (!target) return;
+    const proposed = window.prompt('Rename target:', target.name);
+    if (proposed === null) return;
+    renameCustomTargetById(targetId, proposed);
 }
 
 function rebuildCustomTargetControllers() {
@@ -1346,6 +1393,14 @@ function rebuildCustomTargetControllers() {
     customTargets.forEach(target => {
         const rowFolder = customTargetFolder.addFolder(target.name);
         _trackFolder(rowFolder, `custom-target:${target.id}`);
+        const rowNameModel = { name: target.name };
+        const nameCtrl = rowFolder.add(rowNameModel, 'name').name('Name');
+        nameCtrl.onFinishChange((value) => {
+            const renamed = renameCustomTargetById(target.id, value);
+            if (renamed) return;
+            rowNameModel.name = target.name;
+            nameCtrl.updateDisplay();
+        });
         rowFolder.add(target, 'visible').name('Visible').onChange(() => {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
@@ -1567,6 +1622,33 @@ uiStyles.textContent = `
     .btn-danger:hover { background: #b71c1c; }
     .btn-cancel { background: #444; color: #ccc; }
     .btn-cancel:hover { background: #555; }
+    .custom-target-context-menu {
+        position: fixed;
+        z-index: 2500;
+        display: none;
+        background: rgba(26, 26, 26, 0.95);
+        border: 1px solid #3f3f3f;
+        border-radius: 8px;
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+        padding: 6px;
+        min-width: 132px;
+        backdrop-filter: blur(4px);
+    }
+    .custom-target-context-menu button {
+        width: 100%;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: #e7e7e7;
+        text-align: left;
+        padding: 7px 10px;
+        cursor: pointer;
+        font-size: 13px;
+        font-family: sans-serif;
+    }
+    .custom-target-context-menu button:hover {
+        background: rgba(255, 255, 255, 0.12);
+    }
 `;
 document.head.appendChild(uiStyles);
 
@@ -1613,6 +1695,59 @@ uiContainer.innerHTML = `
     </div>
 `;
 document.body.appendChild(uiContainer);
+
+const customTargetContextMenuEl = document.createElement('div');
+customTargetContextMenuEl.className = 'custom-target-context-menu';
+document.body.appendChild(customTargetContextMenuEl);
+
+function hideCustomTargetContextMenu() {
+    customTargetContextMenuEl.style.display = 'none';
+    customTargetContextMenuEl.innerHTML = '';
+}
+
+function showCustomTargetContextMenu(clientX, clientY, items) {
+    const menuItems = Array.isArray(items) ? items.filter(item =>
+        item &&
+        typeof item.label === 'string' &&
+        typeof item.onSelect === 'function'
+    ) : [];
+    if (menuItems.length === 0) {
+        hideCustomTargetContextMenu();
+        return;
+    }
+    customTargetContextMenuEl.innerHTML = '';
+    menuItems.forEach(item => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = item.label;
+        btn.addEventListener('click', () => {
+            hideCustomTargetContextMenu();
+            item.onSelect();
+        });
+        customTargetContextMenuEl.appendChild(btn);
+    });
+    customTargetContextMenuEl.style.display = 'block';
+
+    const pad = 8;
+    const rect = customTargetContextMenuEl.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - rect.width - pad, Math.max(pad, clientX));
+    const top = Math.min(window.innerHeight - rect.height - pad, Math.max(pad, clientY));
+    customTargetContextMenuEl.style.left = `${left}px`;
+    customTargetContextMenuEl.style.top = `${top}px`;
+}
+
+document.addEventListener('pointerdown', (e) => {
+    if (!(e.target instanceof Node)) return;
+    if (customTargetContextMenuEl.style.display !== 'block') return;
+    if (customTargetContextMenuEl.contains(e.target)) return;
+    hideCustomTargetContextMenu();
+}, true);
+
+window.addEventListener('blur', hideCustomTargetContextMenu);
+window.addEventListener('resize', hideCustomTargetContextMenu);
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideCustomTargetContextMenu();
+});
 
 
 
@@ -3945,7 +4080,7 @@ wellTargetFolder.add(params, 'lat2LP2Position', 0, 4, 0.1).name('LP2 Position').
 wellTargetFolder.add(params, 'targetLP2YOffset', -300, 300, 5).name('LP2 Y Offset (m)').onChange(() => buildWellTrajectories());
 
 customTargetFolder = wellTargetFolder.addFolder('Custom Horizon Targets');
-customTargetFolder.add(params, 'customTargetAddOnClick').name('Add On Horizon Click');
+customTargetFolder.add(params, 'customTargetAddOnClick').name('Add On Horizon Right-Click');
 customTargetFolder.addColor(params, 'customTargetColor').name('New Target Color');
 customTargetFolder.add(params, 'customTargetSize', 5, 200, 1).name('New Target Size (m)');
 customTargetFolder.add(params, 'customTargetOpacity', 0.05, 1.0, 0.05).name('New Target Opacity');
@@ -4757,37 +4892,34 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ── Click horizon to create custom target ───────────────────────────────────
-let _canvasPointerDown = null;
-renderer.domElement.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    _canvasPointerDown = { x: e.clientX, y: e.clientY };
-});
+// ── Right-click menu for custom horizon targets ─────────────────────────────
+const RIGHT_CLICK_DRAG_THRESHOLD_PX = 6;
+let _rightClickDownPoint = null;
+let _rightClickWasDrag = false;
 
-renderer.domElement.addEventListener('pointerup', (e) => {
-    if (e.button !== 0) return;
-    if (!_canvasPointerDown) return;
-
-    const dx = e.clientX - _canvasPointerDown.x;
-    const dy = e.clientY - _canvasPointerDown.y;
-    _canvasPointerDown = null;
-
-    // Ignore drag releases so OrbitControls interaction doesn't place targets.
-    if ((dx * dx + dy * dy) > 25) return;
-    if (!params.customTargetAddOnClick) return;
-
-    const saveModal = document.getElementById('saveModal');
-    const deleteModal = document.getElementById('deleteModal');
-    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex') return;
-
+function raycasterFromClientPoint(clientX, clientY) {
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1
     );
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, camera);
+    return raycaster;
+}
 
+function hitCustomTargetAtClientPoint(clientX, clientY) {
+    if (customTargetGroup.children.length === 0) return null;
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
+    const hits = raycaster.intersectObjects(customTargetGroup.children, false);
+    if (hits.length === 0) return null;
+    const targetId = hits[0]?.object?.userData?.targetId;
+    if (typeof targetId !== 'string' || !targetId) return null;
+    return { targetId };
+}
+
+function hitHorizonAtClientPoint(clientX, clientY) {
+    const raycaster = raycasterFromClientPoint(clientX, clientY);
     const horizonMeshes = allSurveyChildren().filter(c =>
         c instanceof THREE.Mesh &&
         c.userData.isHorizon &&
@@ -4795,13 +4927,84 @@ renderer.domElement.addEventListener('pointerup', (e) => {
         c.visible
     );
     const hits = raycaster.intersectObjects(horizonMeshes, false);
-    if (hits.length === 0) return;
+    return hits.length > 0 ? hits[0] : null;
+}
 
-    addCustomTargetFromIntersection(hits[0]);
+renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (e.button !== 2) return;
+    _rightClickDownPoint = { x: e.clientX, y: e.clientY };
+    _rightClickWasDrag = false;
+    hideCustomTargetContextMenu();
+});
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+    if (!_rightClickDownPoint) return;
+    const dx = e.clientX - _rightClickDownPoint.x;
+    const dy = e.clientY - _rightClickDownPoint.y;
+    if ((dx * dx + dy * dy) > (RIGHT_CLICK_DRAG_THRESHOLD_PX * RIGHT_CLICK_DRAG_THRESHOLD_PX)) {
+        _rightClickWasDrag = true;
+    }
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.button !== 2) return;
+    _rightClickDownPoint = null;
+});
+
+renderer.domElement.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+
+    const saveModal = document.getElementById('saveModal');
+    const deleteModal = document.getElementById('deleteModal');
+    if (saveModal?.style.display === 'flex' || deleteModal?.style.display === 'flex') {
+        hideCustomTargetContextMenu();
+        return;
+    }
+
+    if (_rightClickWasDrag) {
+        _rightClickWasDrag = false;
+        hideCustomTargetContextMenu();
+        return;
+    }
+
+    const targetHit = hitCustomTargetAtClientPoint(e.clientX, e.clientY);
+    if (targetHit) {
+        showCustomTargetContextMenu(e.clientX, e.clientY, [
+            {
+                label: 'Rename target',
+                onSelect: () => promptRenameCustomTarget(targetHit.targetId),
+            },
+            {
+                label: 'Delete target',
+                onSelect: () => removeCustomTargetById(targetHit.targetId),
+            },
+        ]);
+        return;
+    }
+
+    if (!params.customTargetAddOnClick) {
+        hideCustomTargetContextMenu();
+        return;
+    }
+
+    const horizonHit = hitHorizonAtClientPoint(e.clientX, e.clientY);
+    if (!horizonHit) {
+        hideCustomTargetContextMenu();
+        return;
+    }
+
+    showCustomTargetContextMenu(e.clientX, e.clientY, [
+        {
+            label: 'Add target',
+            onSelect: () => addCustomTargetFromIntersection(horizonHit),
+        },
+    ]);
 });
 
 renderer.domElement.addEventListener('pointercancel', () => {
-    _canvasPointerDown = null;
+    _rightClickDownPoint = null;
+    _rightClickWasDrag = false;
+    hideCustomTargetContextMenu();
 });
 
 // Boot — load both fields simultaneously
