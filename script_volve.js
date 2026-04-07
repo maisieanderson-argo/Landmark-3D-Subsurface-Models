@@ -1414,6 +1414,9 @@ function rebuildCustomTargetControllers() {
         const rowFolder = customTargetFolder.addFolder(target.name);
         _trackFolder(rowFolder, `custom-target:${target.id}`);
         const rowNameModel = { name: target.name };
+        const rowOpacityModel = {
+            opacityPct: Math.round((Math.max(0.05, Math.min(1, Number(target.opacity) || Number(params.customTargetOpacity) || 0.65))) * 100),
+        };
         const nameCtrl = rowFolder.add(rowNameModel, 'name').name('Name');
         nameCtrl.onFinishChange((value) => {
             const renamed = renameCustomTargetById(target.id, value);
@@ -1433,7 +1436,10 @@ function rebuildCustomTargetControllers() {
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
-        rowFolder.add(target, 'opacity', 0.05, 1, 0.05).name('Opacity').onFinishChange(() => {
+        rowFolder.add(rowOpacityModel, 'opacityPct', 5, 100, 1).name('Opacity (%)').onFinishChange((v) => {
+            const pct = Math.max(5, Math.min(100, Number(v) || 65));
+            rowOpacityModel.opacityPct = pct;
+            target.opacity = pct / 100;
             rebuildCustomTargets();
             persistCustomTargetsToStorage();
         });
@@ -2221,7 +2227,7 @@ function rebuildCustomHorizonWellControllers() {
                     persistCustomHorizonWellsToStorage();
                 });
             }
-            rowFolder.add(well, 'dotSpacing', 5, 100, 5).name('Dot Spacing (m)').onFinishChange(() => {
+            rowFolder.add(well, 'dotSpacing', 5, 100, 1).name('Dot Spacing (m)').onFinishChange(() => {
                 rebuildCustomHorizonWells();
                 persistCustomHorizonWellsToStorage();
             });
@@ -2660,6 +2666,7 @@ function showAllUI() {
     if (compass) compass.style.display = '';
     if (loading) loading.style.display = '';
     if (title)   title.style.display   = '';
+    positionHistoryActions();
 }
 
 document.querySelector('#ui-container h1').addEventListener('click', hideAllUI);
@@ -2702,8 +2709,17 @@ function positionHistoryActions() {
     const historyEl = document.getElementById('historyActions');
     if (!(historyEl instanceof HTMLElement)) return;
     const guiRoot = document.querySelector('.lil-gui.root');
-    const guiWidth = guiRoot instanceof HTMLElement ? guiRoot.offsetWidth : 300;
-    historyEl.style.right = `${guiWidth + 16}px`;
+    let rightPx = 16;
+    if (
+        guiRoot instanceof HTMLElement &&
+        guiRoot.getClientRects().length > 0 &&
+        getComputedStyle(guiRoot).display !== 'none'
+    ) {
+        const panelRect = guiRoot.getBoundingClientRect();
+        // Keep at least a 16px gap from the panel's left edge.
+        rightPx = Math.max(16, Math.ceil(window.innerWidth - panelRect.left + 16));
+    }
+    historyEl.style.right = `${rightPx}px`;
 }
 
 function pushCustomActionHistorySnapshot() {
@@ -5085,7 +5101,7 @@ customHorizonWellFolder.add(params, 'customHorizonWellPathStyle', ['tube', 'dots
 customHorizonWellFolder.add(params, 'customHorizonWellDoglegSeverity', 1, 20, 0.1).name('New Dogleg Severity');
 customHorizonWellFolder.add(params, 'customHorizonWellTubeRadius', 1, 30, 1).name('New Tube Radius (m)');
 customHorizonWellFolder.add(params, 'customHorizonWellDotSize', 1, 15, 0.5).name('New Dot Size (m)');
-customHorizonWellFolder.add(params, 'customHorizonWellDotSpacing', 5, 100, 5).name('New Dot Spacing (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellDotSpacing', 5, 100, 1).name('New Dot Spacing (m)');
 customHorizonWellFolder.add(params, 'customHorizonWellheadVisible').name('New Show Wellhead');
 customHorizonWellFolder.add(params, 'customHorizonWellheadScale', 0.2, 5, 0.1).name('New Wellhead Scale');
 loadCustomHorizonWellsFromStorage();
