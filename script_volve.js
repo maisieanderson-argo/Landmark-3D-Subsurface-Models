@@ -1623,7 +1623,7 @@ function loadCustomTargetsFromStorage() {
 // ─────────────────────────────────────────────────────────────
 // CUSTOM HORIZON WELLS
 // ─────────────────────────────────────────────────────────────
-const customHorizonWells = []; // { id, name, targetIds, headLocal:{x,y,z}, kickoffDepthM, doglegSeverity, visible, color, wellheadColor, pathStyle, tubeRadius, dotSizingMode, dotSize, dotStartSize, dotEndSize, dotSpacing, showWellhead, wellheadScale }
+const customHorizonWells = []; // { id, name, targetIds, headLocal:{x,y,z}, kickoffDepthM, doglegSeverity, visible, color, wellheadColor, pathStyle, tubeRadius, dotSizingMode, dotSize, dotStartSize, dotEndSize, dotSpacing, ringSizingMode, ringSize, ringStartSize, ringEndSize, ringSpacing, ringColor, ringOpacity, showWellhead, wellheadScale }
 let customHorizonWellSerial = 1;
 let customWellPickerSelectedTargetIds = new Set();
 
@@ -1727,6 +1727,13 @@ function getCustomHorizonWellsState() {
         dotStartSize: w.dotStartSize,
         dotEndSize: w.dotEndSize,
         dotSpacing: w.dotSpacing,
+        ringSizingMode: w.ringSizingMode,
+        ringSize: w.ringSize,
+        ringStartSize: w.ringStartSize,
+        ringEndSize: w.ringEndSize,
+        ringSpacing: w.ringSpacing,
+        ringColor: w.ringColor,
+        ringOpacity: w.ringOpacity,
         kickoffDepthM: w.kickoffDepthM,
         doglegSeverity: w.doglegSeverity,
         showWellhead: w.showWellhead,
@@ -1866,6 +1873,15 @@ function rebuildCustomHorizonWells() {
             well.dotSizingMode = 'uniform';
             mutated = true;
         }
+        if (well.ringSizingMode !== 'uniform' && well.ringSizingMode !== 'grows_with_depth') {
+            well.ringSizingMode = 'uniform';
+            mutated = true;
+        }
+        if (well.pathStyle !== 'tube' && well.pathStyle !== 'dots' && well.pathStyle !== 'rings') {
+            well.pathStyle = 'tube';
+            mutated = true;
+            needsControllerRefresh = true;
+        }
         if (!well.visible) continue;
         if (well.targetIds.length === 0) continue;
 
@@ -1875,16 +1891,25 @@ function rebuildCustomHorizonWells() {
         if (!pathCurve) continue;
 
         const color = new THREE.Color(well.color || params.customHorizonWellColor);
-        const pathStyle = well.pathStyle === 'dots' ? 'dots' : 'tube';
+        const pathStyle = well.pathStyle === 'dots'
+            ? 'dots'
+            : (well.pathStyle === 'rings' ? 'rings' : 'tube');
+        const totalLength = Math.max(1, pathCurve.getLength());
         const tubeRadius = Math.max(0.5, Number(well.tubeRadius) || Number(params.customHorizonWellTubeRadius) || 4);
         const dotSize = Math.max(1, Number(well.dotSize) || Number(params.customHorizonWellDotSize) || 4);
         const dotSizingMode = well.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform';
         const dotStartSize = Math.max(0.5, Number(well.dotStartSize) || dotSize);
         const dotEndSize = Math.max(0.5, Number(well.dotEndSize) || dotStartSize);
         const dotSpacing = Math.max(5, Number(well.dotSpacing) || Number(params.customHorizonWellDotSpacing) || 40);
+        const ringSizingMode = well.ringSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform';
+        const ringSize = Math.max(1, Number(well.ringSize) || 12);
+        const ringStartSize = Math.max(1, Number(well.ringStartSize) || ringSize);
+        const ringEndSize = Math.max(1, Number(well.ringEndSize) || ringStartSize);
+        const ringSpacing = Math.max(1, Number(well.ringSpacing) || 40);
+        const ringColor = new THREE.Color(well.ringColor || well.color || params.customHorizonWellColor);
+        const ringOpacity = THREE.MathUtils.clamp(Number(well.ringOpacity), 0, 1);
 
-        if (pathStyle === 'tube') {
-            const totalLength = Math.max(1, pathCurve.getLength());
+        if (pathStyle === 'tube' || pathStyle === 'rings') {
             const tubeSegments = Math.max(24, Math.round(totalLength / 20));
             const tubeGeo = new THREE.TubeGeometry(pathCurve, tubeSegments, tubeRadius, 8, false);
             const tubeMat = new THREE.MeshPhongMaterial({
@@ -1895,8 +1920,8 @@ function rebuildCustomHorizonWells() {
             const tube = new THREE.Mesh(tubeGeo, tubeMat);
             tube.userData = { isCustomHorizonWell: true, customHorizonWellId: well.id };
             customHorizonWellGroup.add(tube);
-        } else {
-            const totalLength = Math.max(1, pathCurve.getLength());
+        }
+        if (pathStyle === 'dots') {
             const dotCount = Math.max(2, Math.floor(totalLength / dotSpacing));
             const dotGeo = new THREE.SphereGeometry(1, 8, 8);
             const dotMat = new THREE.MeshPhongMaterial({
@@ -1921,6 +1946,41 @@ function rebuildCustomHorizonWells() {
             instanced.instanceMatrix.needsUpdate = true;
             instanced.userData = { isCustomHorizonWell: true, customHorizonWellId: well.id };
             customHorizonWellGroup.add(instanced);
+        }
+        if (pathStyle === 'rings') {
+            const ringCount = Math.max(2, Math.floor(totalLength / ringSpacing));
+            const ringGeo = new THREE.TorusGeometry(1, 0.08, 8, 28);
+            const ringMat = new THREE.MeshPhongMaterial({
+                color: ringColor,
+                emissive: ringColor.clone().multiplyScalar(0.12),
+                shininess: 40,
+                transparent: true,
+                opacity: Number.isFinite(ringOpacity) ? ringOpacity : 0.65,
+                depthWrite: (Number.isFinite(ringOpacity) ? ringOpacity : 0.65) >= 0.99,
+            });
+            const instancedRings = new THREE.InstancedMesh(ringGeo, ringMat, ringCount);
+            const dummy = new THREE.Object3D();
+            const tangent = new THREE.Vector3();
+            const ringNormal = new THREE.Vector3(0, 0, 1);
+            for (let i = 0; i < ringCount; i++) {
+                const t = i / (ringCount - 1);
+                const p = pathCurve.getPointAt(t);
+                const ringDiameter = ringSizingMode === 'grows_with_depth'
+                    ? THREE.MathUtils.lerp(ringStartSize, ringEndSize, t)
+                    : ringSize;
+                const ringRadius = Math.max(0.5, ringDiameter * 0.5);
+                pathCurve.getTangentAt(t, tangent);
+                if (tangent.lengthSq() <= 1e-8) tangent.set(1, 0, 0);
+                else tangent.normalize();
+                dummy.position.copy(p);
+                dummy.quaternion.setFromUnitVectors(ringNormal, tangent);
+                dummy.scale.setScalar(ringRadius);
+                dummy.updateMatrix();
+                instancedRings.setMatrixAt(i, dummy.matrix);
+            }
+            instancedRings.instanceMatrix.needsUpdate = true;
+            instancedRings.userData = { isCustomHorizonWell: true, customHorizonWellId: well.id };
+            customHorizonWellGroup.add(instancedRings);
         }
 
         if (well.showWellhead !== false) {
@@ -1988,13 +2048,22 @@ function duplicateCustomHorizonWellById(wellId) {
         wellheadColor: typeof src.wellheadColor === 'string' && src.wellheadColor
             ? src.wellheadColor
             : (typeof src.color === 'string' && src.color ? src.color : params.customHorizonWellColor),
-        pathStyle: src.pathStyle === 'dots' ? 'dots' : 'tube',
+        pathStyle: src.pathStyle === 'dots'
+            ? 'dots'
+            : (src.pathStyle === 'rings' ? 'rings' : 'tube'),
         tubeRadius: Math.max(1, Number(src.tubeRadius) || Number(params.customHorizonWellTubeRadius) || 4),
         dotSizingMode: src.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
         dotSize: Math.max(0.5, Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
         dotStartSize: Math.max(0.5, Number(src.dotStartSize) || Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
         dotEndSize: Math.max(0.5, Number(src.dotEndSize) || Number(src.dotSize) || Number(params.customHorizonWellDotSize) || 4),
         dotSpacing: Math.max(5, Number(src.dotSpacing) || Number(params.customHorizonWellDotSpacing) || 40),
+        ringSizingMode: src.ringSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
+        ringSize: Math.max(1, Number(src.ringSize) || Number(params.customHorizonWellRingSize) || 12),
+        ringStartSize: Math.max(1, Number(src.ringStartSize) || Number(src.ringSize) || Number(params.customHorizonWellRingStartSize) || 12),
+        ringEndSize: Math.max(1, Number(src.ringEndSize) || Number(src.ringSize) || Number(params.customHorizonWellRingEndSize) || 24),
+        ringSpacing: Math.max(1, Number(src.ringSpacing) || Number(params.customHorizonWellRingSpacing) || 40),
+        ringColor: typeof src.ringColor === 'string' && src.ringColor ? src.ringColor : (typeof src.color === 'string' && src.color ? src.color : params.customHorizonWellColor),
+        ringOpacity: Number.isFinite(Number(src.ringOpacity)) ? THREE.MathUtils.clamp(Number(src.ringOpacity), 0, 1) : Number(params.customHorizonWellRingOpacity),
         showWellhead: src.showWellhead !== false,
         wellheadScale: Math.max(0.2, Number(src.wellheadScale) || Number(params.customHorizonWellheadScale) || 1),
     };
@@ -2043,13 +2112,24 @@ function createCustomHorizonWellFromTargetIds(targetIds) {
         visible: true,
         color: params.customHorizonWellColor,
         wellheadColor: params.customHorizonWellColor,
-        pathStyle: params.customHorizonWellPathStyle === 'dots' ? 'dots' : 'tube',
+        pathStyle: params.customHorizonWellPathStyle === 'dots'
+            ? 'dots'
+            : (params.customHorizonWellPathStyle === 'rings' ? 'rings' : 'tube'),
         tubeRadius: params.customHorizonWellTubeRadius,
         dotSizingMode: 'uniform',
         dotSize: params.customHorizonWellDotSize,
         dotStartSize: params.customHorizonWellDotSize,
         dotEndSize: params.customHorizonWellDotSize,
         dotSpacing: params.customHorizonWellDotSpacing,
+        ringSizingMode: params.customHorizonWellRingSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
+        ringSize: params.customHorizonWellRingSize,
+        ringStartSize: params.customHorizonWellRingStartSize,
+        ringEndSize: params.customHorizonWellRingEndSize,
+        ringSpacing: params.customHorizonWellRingSpacing,
+        ringColor: params.customHorizonWellRingColor || params.customHorizonWellColor,
+        ringOpacity: Number.isFinite(Number(params.customHorizonWellRingOpacity))
+            ? THREE.MathUtils.clamp(Number(params.customHorizonWellRingOpacity), 0, 1)
+            : 0.65,
         showWellhead: params.customHorizonWellheadVisible !== false,
         wellheadScale: params.customHorizonWellheadScale,
     };
@@ -2157,13 +2237,24 @@ function setCustomHorizonWellsFromData(wells, options = {}) {
                 visible: raw.visible !== false,
                 color: typeof raw.color === 'string' && raw.color ? raw.color : params.customHorizonWellColor,
                 wellheadColor: typeof raw.wellheadColor === 'string' && raw.wellheadColor ? raw.wellheadColor : (typeof raw.color === 'string' && raw.color ? raw.color : params.customHorizonWellColor),
-                pathStyle: raw.pathStyle === 'dots' ? 'dots' : 'tube',
+                pathStyle: raw.pathStyle === 'dots'
+                    ? 'dots'
+                    : (raw.pathStyle === 'rings' ? 'rings' : 'tube'),
                 tubeRadius: Number(raw.tubeRadius) > 0 ? Number(raw.tubeRadius) : params.customHorizonWellTubeRadius,
                 dotSize: Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize,
                 dotSizingMode: raw.dotSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
                 dotStartSize: Number(raw.dotStartSize) > 0 ? Number(raw.dotStartSize) : (Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize),
                 dotEndSize: Number(raw.dotEndSize) > 0 ? Number(raw.dotEndSize) : (Number(raw.dotSize) > 0 ? Number(raw.dotSize) : params.customHorizonWellDotSize),
                 dotSpacing: Number(raw.dotSpacing) > 0 ? Number(raw.dotSpacing) : params.customHorizonWellDotSpacing,
+                ringSizingMode: raw.ringSizingMode === 'grows_with_depth' ? 'grows_with_depth' : 'uniform',
+                ringSize: Number(raw.ringSize) > 0 ? Number(raw.ringSize) : params.customHorizonWellRingSize,
+                ringStartSize: Number(raw.ringStartSize) > 0 ? Number(raw.ringStartSize) : (Number(raw.ringSize) > 0 ? Number(raw.ringSize) : params.customHorizonWellRingStartSize),
+                ringEndSize: Number(raw.ringEndSize) > 0 ? Number(raw.ringEndSize) : (Number(raw.ringSize) > 0 ? Number(raw.ringSize) : params.customHorizonWellRingEndSize),
+                ringSpacing: Number(raw.ringSpacing) > 0 ? Number(raw.ringSpacing) : params.customHorizonWellRingSpacing,
+                ringColor: typeof raw.ringColor === 'string' && raw.ringColor ? raw.ringColor : (typeof raw.color === 'string' && raw.color ? raw.color : params.customHorizonWellColor),
+                ringOpacity: Number.isFinite(Number(raw.ringOpacity))
+                    ? THREE.MathUtils.clamp(Number(raw.ringOpacity), 0, 1)
+                    : (Number.isFinite(Number(params.customHorizonWellRingOpacity)) ? THREE.MathUtils.clamp(Number(params.customHorizonWellRingOpacity), 0, 1) : 0.65),
                 kickoffDepthM: Number(raw.kickoffDepthM) > 0 ? Number(raw.kickoffDepthM) : 1500,
                 doglegSeverity: Number(raw.doglegSeverity) > 0 ? Number(raw.doglegSeverity) : (Number(params.customHorizonWellDoglegSeverity) || 8),
                 showWellhead: raw.showWellhead !== false,
@@ -2304,7 +2395,7 @@ function rebuildCustomHorizonWellControllers() {
                 persistCustomHorizonWellsToStorage();
             }
         );
-        rowFolder.add(well, 'pathStyle', ['tube', 'dots']).name('Path Style').onChange(() => {
+        rowFolder.add(well, 'pathStyle', ['tube', 'dots', 'rings']).name('Path Style').onChange(() => {
             rebuildCustomHorizonWells();
             rebuildCustomHorizonWellControllers();
             persistCustomHorizonWellsToStorage();
@@ -2376,6 +2467,78 @@ function rebuildCustomHorizonWellControllers() {
                 }
             );
         }
+        if (well.pathStyle === 'rings') {
+            rowFolder.addColor(well, 'ringColor').name('Ring Color').onChange(() => {
+                rebuildCustomHorizonWells();
+                persistCustomHorizonWellsToStorage();
+            });
+            bindSliderRealtime(
+                rowFolder.add(well, 'ringOpacity', 0.05, 1, 0.05).name('Ring Opacity'),
+                () => {
+                    well.ringOpacity = THREE.MathUtils.clamp(Number(well.ringOpacity), 0, 1);
+                    rebuildCustomHorizonWells();
+                },
+                () => {
+                    well.ringOpacity = THREE.MathUtils.clamp(Number(well.ringOpacity), 0, 1);
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                }
+            );
+            rowFolder.add(well, 'ringSizingMode', {
+                'Uniform': 'uniform',
+                'Grows with depth': 'grows_with_depth',
+            }).name('Ring Sizing').onChange((value) => {
+                if (value !== 'uniform' && value !== 'grows_with_depth') {
+                    well.ringSizingMode = 'uniform';
+                }
+                rebuildCustomHorizonWells();
+                rebuildCustomHorizonWellControllers();
+                persistCustomHorizonWellsToStorage();
+            });
+            if (well.ringSizingMode === 'grows_with_depth') {
+                bindSliderRealtime(
+                    rowFolder.add(well, 'ringStartSize', 1, 200, 1).name('Starting Ring Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
+                bindSliderRealtime(
+                    rowFolder.add(well, 'ringEndSize', 1, 200, 1).name('End Ring Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
+            } else {
+                bindSliderRealtime(
+                    rowFolder.add(well, 'ringSize', 1, 200, 1).name('Ring Size (m)'),
+                    () => {
+                        rebuildCustomHorizonWells();
+                    },
+                    () => {
+                        rebuildCustomHorizonWells();
+                        persistCustomHorizonWellsToStorage();
+                    }
+                );
+            }
+            bindSliderRealtime(
+                rowFolder.add(well, 'ringSpacing', 1, 200, 1).name('Ring Spacing (m)'),
+                () => {
+                    rebuildCustomHorizonWells();
+                },
+                () => {
+                    rebuildCustomHorizonWells();
+                    persistCustomHorizonWellsToStorage();
+                }
+            );
+        }
         rowFolder.add(well, 'showWellhead').name('Show Wellhead').onChange(() => {
             rebuildCustomHorizonWells();
             persistCustomHorizonWellsToStorage();
@@ -2424,7 +2587,7 @@ function rebuildCustomHorizonWellControllers() {
 // ─────────────────────────────────────────────────────────────
 // CUSTOM SURFACE NETWORKS
 // ─────────────────────────────────────────────────────────────
-const customSurfaceNetworks = []; // { id, name, local:{x,y,z}, scale, bodyHeightM, topWidthM, topLengthM, bottomWidthM, bottomLengthM, fillColor, strokeColor, fillOpacity, visible, showRisers, showRiserBase, riserBaseHeightM, riserColor, riserThicknessM, riserSpreadM, riserBaseFillColor, riserBaseStrokeColor, riserBaseFillOpacity, showConnectingPipe, pipeBaseHeightM, pipeColor, pipeThicknessM }
+const customSurfaceNetworks = []; // { id, name, local:{x,y,z}, rotationDeg, scale, bodyHeightM, topWidthM, topLengthM, bottomWidthM, bottomLengthM, fillColor, strokeColor, fillOpacity, visible, showRisers, showRiserBase, riserBaseHeightM, riserColor, riserThicknessM, riserSpreadM, riserBaseFillColor, riserBaseStrokeColor, riserBaseFillOpacity, showConnectingPipe, pipeBaseHeightM, pipeColor, pipeThicknessM }
 let customSurfaceNetworkSerial = 1;
 
 const customSurfaceNetworkUi = {
@@ -2735,6 +2898,7 @@ function getCustomSurfaceNetworksState() {
             y: Number(n.local?.y) || 0,
             z: Number(n.local?.z) || 0,
         },
+        rotationDeg: Number(n.rotationDeg) || 0,
         scale: Math.max(0.05, Number(n.scale) || 1),
         bodyHeightM: Math.max(10, Number(n.bodyHeightM) || 500),
         topWidthM: Math.max(10, Number(n.topWidthM) || 500),
@@ -2800,6 +2964,7 @@ function rebuildCustomSurfaceNetworks() {
         const x = Number(network.local?.x) || 0;
         const y = Number(network.local?.y) || 0;
         const z = Number(network.local?.z) || 0;
+        const rotationDeg = Number(network.rotationDeg) || 0;
         const dims = readSurfaceNetworkDimensions(network);
         const scaledTopWidth = dims.topWidthM * dims.scale;
         const scaledTopLength = dims.topLengthM * dims.scale;
@@ -2816,6 +2981,7 @@ function rebuildCustomSurfaceNetworks() {
 
         const container = new THREE.Group();
         container.position.set(x, y, z);
+        container.rotation.y = THREE.MathUtils.degToRad(rotationDeg);
         container.userData = {
             isCustomSurfaceNetwork: true,
             customSurfaceNetworkId: network.id,
@@ -2998,6 +3164,7 @@ function createCustomSurfaceNetwork() {
         id: `csn_${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
         name: nextCustomSurfaceNetworkName(),
         local: defaultLocal,
+        rotationDeg: 0,
         scale: 1,
         bodyHeightM: 500,
         topWidthM: 500,
@@ -3052,6 +3219,7 @@ function setCustomSurfaceNetworksFromData(networks, options = {}) {
                     y: Number(raw.local?.y) || 0,
                     z: Number(raw.local?.z) || 0,
                 },
+                rotationDeg: Number(raw.rotationDeg) || 0,
                 ...readSurfaceNetworkDimensions(raw),
                 fillColor: typeof raw.fillColor === 'string' && raw.fillColor ? raw.fillColor : '#52d8ff',
                 strokeColor: typeof raw.strokeColor === 'string' && raw.strokeColor ? raw.strokeColor : '#ffffff',
@@ -3211,6 +3379,7 @@ function rebuildCustomSurfaceNetworkControllers() {
             eastWestM: Number(network.local?.x) || 0,
             northSouthM: -(Number(network.local?.z) || 0),
             heightM: Number(network.local?.y) || 0,
+            rotationDeg: Number(network.rotationDeg) || 0,
         };
         bindSliderRealtime(
             rowFolder.add(posModel, 'eastWestM', -25000, 25000, 1).name('East/West (m)'),
@@ -3244,6 +3413,18 @@ function rebuildCustomSurfaceNetworkControllers() {
             },
             (v) => {
                 network.local.y = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+                persistCustomSurfaceNetworksToStorage();
+            }
+        );
+        bindSliderRealtime(
+            rowFolder.add(posModel, 'rotationDeg', -180, 180, 1).name('Rotation (°)'),
+            (v) => {
+                network.rotationDeg = Number(v) || 0;
+                rebuildCustomSurfaceNetworks();
+            },
+            (v) => {
+                network.rotationDeg = Number(v) || 0;
                 rebuildCustomSurfaceNetworks();
                 persistCustomSurfaceNetworksToStorage();
             }
@@ -4380,6 +4561,7 @@ const CUSTOM_TARGETS_STORAGE_KEY = 'geo_custom_horizon_targets';
 const CUSTOM_HORIZON_WELLS_STORAGE_KEY = 'geo_custom_horizon_wells';
 const CUSTOM_SURFACE_NETWORKS_STORAGE_KEY = 'geo_custom_surface_networks';
 const CUSTOM_TIE_BACK_LINES_STORAGE_KEY = 'geo_custom_tie_back_lines';
+const REGIONAL_CONTEXT_VISIBILITY_STORAGE_KEY = 'geo_regional_context_visibility';
 const CUSTOM_ACTION_HISTORY_LIMIT = 250;
 
 let customActionHistory = [];
@@ -4633,6 +4815,13 @@ const _paramsDefaults = {
     customHorizonWellTubeRadius: 4,
     customHorizonWellDotSize: 4,
     customHorizonWellDotSpacing: 40,
+    customHorizonWellRingSizingMode: 'uniform',
+    customHorizonWellRingSize: 12,
+    customHorizonWellRingStartSize: 12,
+    customHorizonWellRingEndSize: 24,
+    customHorizonWellRingSpacing: 40,
+    customHorizonWellRingColor: '#7de2d1',
+    customHorizonWellRingOpacity: 0.65,
     customHorizonWellheadVisible: true,
     customHorizonWellheadScale: 1.0,
     wellOffsetEastKm: -15,
@@ -4653,6 +4842,7 @@ const _paramsDefaults = {
     surfaceGridOpacity: 0.25,
     surfaceGridColor: '#4a6a8a',
     surfaceGridWireframe: true,
+    surfaceGridHeightOffsetM: 0,
 
     // ── Horizon Display Mode ─────────────────────────────────────────────────
     showHorizonDots: true,            // show point cloud overlay (independent of solid mesh)
@@ -4684,6 +4874,32 @@ const params = new Proxy(_paramsDefaults, {
         return true;
     }
 });
+
+function persistRegionalContextVisibilityToStorage() {
+    const state = {
+        surfaceGridVisible: params.surfaceGridVisible !== false,
+        regionalShowContours: params.regionalShowContours === true,
+    };
+    try {
+        localStorage.setItem(REGIONAL_CONTEXT_VISIBILITY_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {}
+}
+
+function loadRegionalContextVisibilityFromStorage() {
+    try {
+        const raw = localStorage.getItem(REGIONAL_CONTEXT_VISIBILITY_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.surfaceGridVisible === 'boolean') {
+            params.surfaceGridVisible = parsed.surfaceGridVisible;
+        }
+        if (typeof parsed?.regionalShowContours === 'boolean') {
+            params.regionalShowContours = parsed.regionalShowContours;
+        }
+    } catch (e) {}
+}
+
+loadRegionalContextVisibilityFromStorage();
 
 
 // Global Layer State for Presets
@@ -5403,6 +5619,7 @@ function applyState(state) {
         surfaceGridMesh.material.opacity = params.surfaceGridOpacity;
         surfaceGridMesh.material.wireframe = params.surfaceGridWireframe;
         surfaceGridMesh.material.color.set(params.surfaceGridColor);
+        surfaceGridMesh.position.y = Number(params.surfaceGridHeightOffsetM) || 0;
         surfaceGridMesh.material.needsUpdate = true;
     }
 
@@ -5437,6 +5654,9 @@ function applyState(state) {
         camera.updateProjectionMatrix();
         controls.update();
     }
+
+    // Keep key regional visibility toggles persistent independent of preset state.
+    persistRegionalContextVisibilityToStorage();
 }
 
 
@@ -5880,6 +6100,7 @@ function buildSurfaceGrid() {
     surfaceGridMesh = new THREE.Mesh(geo, mat);
     surfaceGridMesh.userData.isSurfaceGrid = true;
     surfaceGridMesh.visible = params.surfaceGridVisible && params.surfaceGridOpacity > 0;
+    surfaceGridMesh.position.y = Number(params.surfaceGridHeightOffsetM) || 0;
     modelGroup.add(surfaceGridMesh);
     console.log(`Surface grid built: ${width.toFixed(0)} × ${height.toFixed(0)} m at Y=${gridY.toFixed(1)}`);
 }
@@ -6810,11 +7031,18 @@ loadCustomTargetsFromStorage();
 customHorizonWellFolder = wellFolder.addFolder('Custom Horizon Wells');
 _trackFolder(customHorizonWellFolder, 'Custom Horizon Wells');
 customHorizonWellFolder.addColor(params, 'customHorizonWellColor').name('New Well Color');
-customHorizonWellFolder.add(params, 'customHorizonWellPathStyle', ['tube', 'dots']).name('New Path Style');
+customHorizonWellFolder.add(params, 'customHorizonWellPathStyle', ['tube', 'dots', 'rings']).name('New Path Style');
 customHorizonWellFolder.add(params, 'customHorizonWellDoglegSeverity', 1, 20, 0.1).name('New Dogleg Severity');
 customHorizonWellFolder.add(params, 'customHorizonWellTubeRadius', 1, 30, 1).name('New Tube Radius (m)');
 customHorizonWellFolder.add(params, 'customHorizonWellDotSize', 1, 15, 0.5).name('New Dot Size (m)');
 customHorizonWellFolder.add(params, 'customHorizonWellDotSpacing', 5, 100, 1).name('New Dot Spacing (m)');
+customHorizonWellFolder.addColor(params, 'customHorizonWellRingColor').name('New Ring Color');
+customHorizonWellFolder.add(params, 'customHorizonWellRingOpacity', 0.05, 1, 0.05).name('New Ring Opacity');
+customHorizonWellFolder.add(params, 'customHorizonWellRingSizingMode', ['uniform', 'grows_with_depth']).name('New Ring Sizing');
+customHorizonWellFolder.add(params, 'customHorizonWellRingSize', 1, 200, 1).name('New Ring Size (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellRingStartSize', 1, 200, 1).name('New Ring Start Size (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellRingEndSize', 1, 200, 1).name('New Ring End Size (m)');
+customHorizonWellFolder.add(params, 'customHorizonWellRingSpacing', 1, 200, 1).name('New Ring Spacing (m)');
 customHorizonWellFolder.add(params, 'customHorizonWellheadVisible').name('New Show Wellhead');
 customHorizonWellFolder.add(params, 'customHorizonWellheadScale', 0.2, 5, 0.1).name('New Wellhead Scale');
 loadCustomHorizonWellsFromStorage();
@@ -6872,6 +7100,12 @@ const surfaceGridFolder = regionalFolder.addFolder('Surface Grid');
 _trackFolder(surfaceGridFolder, 'Surface Grid');
 surfaceGridFolder.add(params, 'surfaceGridVisible').name('Show').onChange(v => {
     if (surfaceGridMesh) surfaceGridMesh.visible = v && params.surfaceGridOpacity > 0;
+    persistRegionalContextVisibilityToStorage();
+});
+surfaceGridFolder.add(params, 'surfaceGridHeightOffsetM', -10000, 10000, 10).name('Height (m)').onChange(v => {
+    if (surfaceGridMesh) {
+        surfaceGridMesh.position.y = Number(v) || 0;
+    }
 });
 surfaceGridFolder.add(params, 'surfaceGridOpacity', 0, 1, 0.01).name('Opacity').onChange(v => {
     if (surfaceGridMesh) {
@@ -6902,6 +7136,7 @@ regionalTopoFolder.add(params, 'regionalContourSmooth', 0, 8, 1).name('Smoothing
 
 regionalTopoFolder.add(params, 'regionalShowContours').name('Enable').onChange(v => {
     if (regionalContourMesh) regionalContourMesh.visible = v;
+    persistRegionalContextVisibilityToStorage();
 });
 
 regionalTopoFolder.add(params, 'regionalContourInterval', 10, 500, 1).name('Interval').onChange(v => {
