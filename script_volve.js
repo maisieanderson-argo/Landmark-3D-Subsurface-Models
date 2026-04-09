@@ -62,6 +62,48 @@ function bindSliderRealtime(controller, onScrub, onCommit = onScrub) {
     return controller;
 }
 
+function captureGuiScrollStateForFolder(folder) {
+    const snapshots = [];
+    const seen = new Set();
+    const add = (el) => {
+        if (!(el instanceof HTMLElement)) return;
+        if (seen.has(el)) return;
+        seen.add(el);
+        snapshots.push({
+            el,
+            top: el.scrollTop,
+            left: el.scrollLeft,
+        });
+    };
+    const root = folder?.domElement?.closest?.('.lil-gui') || null;
+    add(root);
+    add(root?.querySelector?.(':scope > .children') || null);
+    add(folder?.domElement?.querySelector?.(':scope > .children') || null);
+    add(folder?.domElement?.parentElement || null);
+    return snapshots;
+}
+
+function restoreGuiScrollState(snapshots) {
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return;
+    const apply = () => {
+        snapshots.forEach((snapshot) => {
+            const el = snapshot?.el;
+            if (!(el instanceof HTMLElement)) return;
+            if (!el.isConnected) return;
+            el.scrollTop = Number(snapshot.top) || 0;
+            el.scrollLeft = Number(snapshot.left) || 0;
+        });
+    };
+    apply();
+    requestAnimationFrame(() => {
+        apply();
+        requestAnimationFrame(() => {
+            apply();
+            setTimeout(apply, 0);
+        });
+    });
+}
+
 // Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1440,10 +1482,6 @@ function rebuildCustomTargetControllers() {
         customTargetDeleteAllCtrl = null;
     }
 
-    if (customTargets.length > 0) {
-        customTargetDeleteAllCtrl = customTargetFolder.add(customTargetUi, 'deleteAll').name('Delete All Targets');
-    }
-
     customTargets.forEach(target => {
         const rowFolder = customTargetFolder.addFolder(target.name);
         _trackFolder(rowFolder, `custom-target:${target.id}`);
@@ -1626,6 +1664,8 @@ function loadCustomTargetsFromStorage() {
 const customHorizonWells = []; // { id, name, targetIds, headLocal:{x,y,z}, kickoffDepthM, doglegSeverity, visible, color, wellheadColor, pathStyle, tubeRadius, dotSizingMode, dotSize, dotStartSize, dotEndSize, dotSpacing, ringSizingMode, ringSize, ringStartSize, ringEndSize, ringSpacing, ringColor, ringOpacity, showWellhead, wellheadScale }
 let customHorizonWellSerial = 1;
 let customWellPickerSelectedTargetIds = new Set();
+let editWellTargetsTargetWellId = null;
+let editWellTargetsSelectedTargetIds = new Set();
 
 const customHorizonWellUi = {
     createNewWell: () => openCreateCustomHorizonWellModal(),
@@ -2184,6 +2224,76 @@ function renderCustomHorizonWellTargetPicker() {
     }
 }
 
+function renderEditCustomHorizonWellTargetPicker() {
+    const listEl = document.getElementById('editWellTargetList');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    if (customTargets.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'custom-well-picker-empty';
+        empty.textContent = 'No custom targets available.';
+        listEl.appendChild(empty);
+        return;
+    }
+
+    customTargets.forEach(target => {
+        const row = document.createElement('label');
+        row.className = 'custom-well-picker-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = editWellTargetsSelectedTargetIds.has(target.id);
+        cb.addEventListener('change', () => {
+            if (cb.checked) editWellTargetsSelectedTargetIds.add(target.id);
+            else editWellTargetsSelectedTargetIds.delete(target.id);
+        });
+        const text = document.createElement('span');
+        text.textContent = target.name;
+        row.appendChild(cb);
+        row.appendChild(text);
+        listEl.appendChild(row);
+    });
+}
+
+function openEditCustomHorizonWellTargetsModal(wellId) {
+    const well = getCustomHorizonWellById(wellId);
+    if (!well) return;
+    editWellTargetsTargetWellId = wellId;
+    editWellTargetsSelectedTargetIds = new Set(
+        orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id))
+    );
+    const titleEl = document.getElementById('editWellTargetsTitle');
+    if (titleEl) titleEl.textContent = `Edit Targets — ${well.name}`;
+    renderEditCustomHorizonWellTargetPicker();
+    const modal = document.getElementById('editWellTargetsModal');
+    if (modal) modal.style.display = 'flex';
+}
+
+function confirmEditCustomHorizonWellTargetsModal() {
+    const well = getCustomHorizonWellById(editWellTargetsTargetWellId);
+    if (!well) {
+        window.closeModal?.('editWellTargetsModal');
+        return;
+    }
+    const selected = orderedUniqueTargetIds([...editWellTargetsSelectedTargetIds]).filter(id => !!getCustomTargetById(id));
+    if (selected.length === 0) {
+        alert('Select at least one target for the well trajectory.');
+        return;
+    }
+
+    const current = orderedUniqueTargetIds(well.targetIds).filter(id => !!getCustomTargetById(id));
+    const selectedSet = new Set(selected);
+    const ordered = [
+        ...current.filter(id => selectedSet.has(id)),
+        ...selected.filter(id => !current.includes(id)),
+    ];
+    well.targetIds = ordered;
+    rebuildCustomHorizonWells();
+    rebuildCustomHorizonWellControllers();
+    persistCustomHorizonWellsToStorage();
+    window.closeModal?.('editWellTargetsModal');
+}
+
 function openCreateCustomHorizonWellModal(prefillTargetIds = []) {
     if (customTargets.length === 0) {
         alert('Create at least one custom target first.');
@@ -2286,8 +2396,7 @@ function loadCustomHorizonWellsFromStorage() {
 function rebuildCustomHorizonWellControllers() {
     if (!customHorizonWellFolder) return;
 
-    const guiRoot = customHorizonWellFolder.domElement?.closest?.('.lil-gui') || null;
-    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+    const scrollState = captureGuiScrollStateForFolder(customHorizonWellFolder);
 
     customHorizonWellRowFolders.forEach(folder => folder.destroy());
     customHorizonWellRowFolders = [];
@@ -2299,10 +2408,6 @@ function rebuildCustomHorizonWellControllers() {
     if (!customHorizonWellCreateCtrl) {
         customHorizonWellCreateCtrl = customHorizonWellFolder.add(customHorizonWellUi, 'createNewWell').name('Create New Well');
     }
-    if (customHorizonWells.length > 0) {
-        customHorizonWellDeleteAllCtrl = customHorizonWellFolder.add(customHorizonWellUi, 'deleteAll').name('Delete All Wells');
-    }
-
     customHorizonWells.forEach(well => {
         const rowFolder = customHorizonWellFolder.addFolder(well.name);
         _trackFolder(rowFolder, `custom-horizon-well:${well.id}`);
@@ -2571,17 +2676,15 @@ function rebuildCustomHorizonWellControllers() {
         }
 
         const rowActions = {
+            editTargets: () => openEditCustomHorizonWellTargetsModal(well.id),
             deleteWell: () => removeCustomHorizonWellById(well.id),
         };
+        rowFolder.add(rowActions, 'editTargets').name('Edit Targets');
         rowFolder.add(rowActions, 'deleteWell').name('Delete');
         customHorizonWellRowFolders.push(rowFolder);
     });
 
-    if (guiRoot) {
-        requestAnimationFrame(() => {
-            guiRoot.scrollTop = prevScrollTop;
-        });
-    }
+    restoreGuiScrollState(scrollState);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -4368,6 +4471,18 @@ uiContainer.innerHTML = `
         </div>
     </div>
 
+    <!-- Edit Custom Well Targets Modal -->
+    <div id="editWellTargetsModal" class="modal-overlay">
+        <div class="modal">
+            <h3 id="editWellTargetsTitle">Edit Targets</h3>
+            <div id="editWellTargetList" class="custom-well-target-dropdown-list open"></div>
+            <div class="modal-buttons">
+                <button class="btn btn-cancel" onclick="closeModal('editWellTargetsModal')">Cancel</button>
+                <button class="btn btn-primary" id="confirmEditWellTargets">Apply</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Create / Edit Tie Back Line Modal -->
     <div id="createTieBackLineModal" class="modal-overlay">
         <div class="modal">
@@ -4447,6 +4562,9 @@ document.getElementById('tieBackLineSurfaceNetworkSelect')?.addEventListener('ch
 document.getElementById('confirmCreateWell')?.addEventListener('click', () => {
     confirmCreateCustomHorizonWellFromModal();
 });
+document.getElementById('confirmEditWellTargets')?.addEventListener('click', () => {
+    confirmEditCustomHorizonWellTargetsModal();
+});
 document.getElementById('confirmCreateTieBackLine')?.addEventListener('click', () => {
     confirmTieBackLinePickerModal();
 });
@@ -4507,6 +4625,14 @@ window.closeModal = (id) => {
         if (titleEl) titleEl.textContent = 'Create Tie Back Line';
         const confirmBtn = document.getElementById('confirmCreateTieBackLine');
         if (confirmBtn) confirmBtn.textContent = 'Create';
+    }
+    if (id === 'editWellTargetsModal') {
+        editWellTargetsTargetWellId = null;
+        editWellTargetsSelectedTargetIds = new Set();
+        const titleEl = document.getElementById('editWellTargetsTitle');
+        if (titleEl) titleEl.textContent = 'Edit Targets';
+        const listEl = document.getElementById('editWellTargetList');
+        if (listEl) listEl.innerHTML = '';
     }
 };
 
@@ -8271,11 +8397,13 @@ renderer.domElement.addEventListener('contextmenu', (e) => {
     const saveModal = document.getElementById('saveModal');
     const deleteModal = document.getElementById('deleteModal');
     const createWellModal = document.getElementById('createWellModal');
+    const editWellTargetsModal = document.getElementById('editWellTargetsModal');
     const createTieBackLineModal = document.getElementById('createTieBackLineModal');
     if (
         saveModal?.style.display === 'flex' ||
         deleteModal?.style.display === 'flex' ||
         createWellModal?.style.display === 'flex' ||
+        editWellTargetsModal?.style.display === 'flex' ||
         createTieBackLineModal?.style.display === 'flex'
     ) {
         hideCustomTargetContextMenu();
