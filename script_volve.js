@@ -5356,6 +5356,8 @@ function refitNorneUVsToOBB() {
 // Vertical plane spanning the full length × height of the OBB, textured with
 // the user-provided seismic section image. Shares the OBB rotation.
 const _seismicTexture = new THREE.TextureLoader().load('seismic_crossline.jpg');
+_seismicTexture.wrapS = THREE.RepeatWrapping;
+_seismicTexture.repeat.x = -1;   // flip horizontally
 function buildSeismicPanel() {
     if (seismicPanel) {
         norneSurveyGroup.remove(seismicPanel);
@@ -6144,7 +6146,7 @@ function startCameraFlythrough(startCam, endCam, durationSec, easingName, loop =
         endCam,
         startSpherical,
         endSpherical,
-        startTime: performance.now(),
+        startTime: performance.now() + 1000, // 1s delay before motion begins
         durationMs: durationSec * 1000,
         easingFn,
         loop,
@@ -6165,8 +6167,8 @@ function stopCameraFlythrough() {
     _flyAnim = null;
     controls.enabled = true;
 
-    // Restore UI
-    showAllUI();
+    // Restore UI after a brief delay for clean screen recording endings
+    setTimeout(showAllUI, 1000);
 
     console.log('🎬 Flythrough stopped');
 }
@@ -6179,7 +6181,7 @@ function _tickCameraFlythrough() {
 
     const { startCam, endCam, startSpherical, endSpherical, startTime, durationMs, easingFn, loop, direction } = _flyAnim;
     const elapsed = performance.now() - startTime;
-    let rawT = Math.min(elapsed / durationMs, 1.0);
+    let rawT = Math.max(0, Math.min(elapsed / durationMs, 1.0));
 
     // Apply direction for ping-pong
     let t = direction === -1 ? 1 - rawT : rawT;
