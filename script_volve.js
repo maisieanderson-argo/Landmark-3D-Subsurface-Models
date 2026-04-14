@@ -257,6 +257,22 @@ TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
 // Backward-compat alias used by the clear-texture sweep
 const semMapTexture = semMapTextures[getTextureKey('norne', 'Åre Fm Top')];
 
+// ── BCU texture overlay data (loaded from Volve seismic attribute grid) ──
+// 80×200 grid of amplitude perturbation values from the BCU horizon
+let bcuTextureData = null;   // { rows, cols, dx_il, dx_xl, p5, p95, data[][] }
+fetch('volve_bcu_texture.json')
+    .then(r => r.json())
+    .then(d => {
+        bcuTextureData = d;
+        console.log(`BCU texture loaded: ${d.rows}×${d.cols}, p5=${d.p5} p95=${d.p95}`);
+        // Apply immediately if intensity is already non-zero (e.g. restored from localStorage)
+        if (params.bcuTextureIntensity > 0) {
+            applyHorizonPositions();
+            updateColoring();
+        }
+    })
+    .catch(e => console.warn('BCU texture not available:', e));
+
 // ── Per-layer offscreen canvases for pixel sampling (used by dots mode) ──
 const semMapCanvases = {};   // survey:layerName → { canvas, ctx }
 const specDCanvases = {};    // survey:layerName → { canvas, ctx }
@@ -4405,6 +4421,77 @@ uiStyles.textContent = `
         opacity: 0.45;
         cursor: default;
     }
+    /* ── Camera Flythrough Styles ──────────────────────────────────────────── */
+    .icon-btn.flythrough-btn {
+        background: linear-gradient(135deg, #1a3a5c, #1e88e5);
+        color: #b8dcff;
+        position: relative;
+        overflow: hidden;
+    }
+    .icon-btn.flythrough-btn:hover {
+        background: linear-gradient(135deg, #1e4a6e, #42a5f5);
+        color: #fff;
+    }
+    .icon-btn.flythrough-btn.animating {
+        background: linear-gradient(135deg, #b71c1c, #e53935);
+        color: #fdd;
+    }
+    .flythrough-modal .modal {
+        min-width: 380px;
+        max-width: 420px;
+    }
+    .flythrough-form-group {
+        margin-bottom: 14px;
+    }
+    .flythrough-form-group label {
+        display: block;
+        font-size: 12px;
+        color: #aaa;
+        margin-bottom: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .flythrough-form-group select,
+    .flythrough-form-group input[type="number"] {
+        width: 100%;
+        padding: 8px 10px;
+        background: #111;
+        border: 1px solid #444;
+        color: #fff;
+        border-radius: 4px;
+        box-sizing: border-box;
+        font-size: 13px;
+    }
+    .flythrough-form-group input[type="range"] {
+        width: 100%;
+        margin-top: 4px;
+        accent-color: #42a5f5;
+    }
+    .flythrough-form-row {
+        display: flex;
+        gap: 12px;
+    }
+    .flythrough-form-row .flythrough-form-group {
+        flex: 1;
+    }
+    .flythrough-easing-preview {
+        height: 50px;
+        background: #0a0a0a;
+        border: 1px solid #333;
+        border-radius: 4px;
+        margin-top: 4px;
+        position: relative;
+        overflow: hidden;
+    }
+    .flythrough-easing-preview canvas {
+        width: 100%;
+        height: 100%;
+    }
+    .flythrough-hint {
+        font-size: 11px;
+        color: #777;
+        margin-top: 4px;
+    }
 `;
 document.head.appendChild(uiStyles);
 
@@ -4423,6 +4510,10 @@ uiContainer.innerHTML = `
         </button>
         <button id="btnDelete" class="icon-btn delete" title="Delete Preset">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
+        <span style="width:1px; height:20px; background:#444; margin:0 4px;"></span>
+        <button id="btnFlythrough" class="icon-btn flythrough-btn" title="Camera Flythrough">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
         </button>
     </div>
     <div class="history-actions" id="historyActions">
@@ -4497,6 +4588,52 @@ uiContainer.innerHTML = `
             <div class="modal-buttons">
                 <button class="btn btn-cancel" onclick="closeModal('createTieBackLineModal')">Cancel</button>
                 <button class="btn btn-primary" id="confirmCreateTieBackLine">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Camera Flythrough Modal -->
+    <div id="flythroughModal" class="modal-overlay flythrough-modal">
+        <div class="modal">
+            <h3>🎬 Camera Flythrough</h3>
+            <div class="flythrough-form-group">
+                <label>Start Preset</label>
+                <select id="flythroughStartPreset" class="preset-select" style="width:100%"></select>
+            </div>
+            <div class="flythrough-form-group">
+                <label>End Preset</label>
+                <select id="flythroughEndPreset" class="preset-select" style="width:100%"></select>
+            </div>
+            <div class="flythrough-form-row">
+                <div class="flythrough-form-group">
+                    <label>Duration (seconds)</label>
+                    <input type="number" id="flythroughDuration" min="0.5" max="60" step="0.5" value="3">
+                </div>
+                <div class="flythrough-form-group">
+                    <label>Easing Curve</label>
+                    <select id="flythroughEasing">
+                        <option value="easeInOutCubic" selected>Ease In-Out (Smooth)</option>
+                        <option value="easeInOutQuad">Ease In-Out (Gentle)</option>
+                        <option value="easeInOutQuart">Ease In-Out (Snappy)</option>
+                        <option value="easeInOutQuint">Ease In-Out (Dramatic)</option>
+                        <option value="easeOutCubic">Ease Out (Decelerate)</option>
+                        <option value="easeInCubic">Ease In (Accelerate)</option>
+                        <option value="linear">Linear</option>
+                        <option value="easeInOutBack">Overshoot</option>
+                        <option value="easeInOutElastic">Elastic</option>
+                    </select>
+                </div>
+            </div>
+            <div class="flythrough-form-group">
+                <label>Preview Curve</label>
+                <div class="flythrough-easing-preview" id="flythroughEasingPreview"><canvas></canvas></div>
+            </div>
+            <div class="flythrough-form-group">
+                <label><input type="checkbox" id="flythroughLoop" style="margin-right:6px;">Loop (ping-pong)</label>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-cancel" onclick="closeModal('flythroughModal')">Cancel</button>
+                <button class="btn btn-primary" id="confirmFlythrough" style="background:linear-gradient(135deg,#1565c0,#42a5f5);">▶ Play</button>
             </div>
         </div>
     </div>
@@ -4656,9 +4793,11 @@ function hideAllUI() {
     if (loading) loading.style.display = 'none';
     if (title)   title.style.display   = 'none';
 
-    // One-shot click listener on the canvas to restore UI
-    const canvas = document.querySelector('#canvas-container canvas') || document.getElementById('canvas-container');
-    canvas.addEventListener('click', showAllUI, { once: true });
+    // One-shot click listener on the canvas to restore UI (skip during flythrough)
+    if (!_flyAnim) {
+        const canvas = document.querySelector('#canvas-container canvas') || document.getElementById('canvas-container');
+        canvas.addEventListener('click', showAllUI, { once: true });
+    }
 }
 
 function showAllUI() {
@@ -4978,6 +5117,8 @@ const _paramsDefaults = {
     show3DDots: false,                  // fill dots between adjacent visible horizons
     threeDDotSize: 8,                   // sphere radius in scene metres
     threeDDotDensity: 1,                // vertical density multiplier (1 = grid spacing)
+    // ── BCU Texture Overlay (Volve → Norne) ──────────────────────────────────
+    bcuTextureIntensity: 50,            // scales BCU amplitude perturbation on Norne horizons (metres)
 };
 
 // Default layer overrides for specific layers (applied when no localStorage exists)
@@ -5330,6 +5471,13 @@ function addHorizonPanelControls() {
         .name('Layer Spread (×)')
         .onChange(v => applyHorizonDepthExag(v));
 
+    // BCU texture overlay (Volve seismic attribute → Norne horizon roughness)
+    bindSliderRealtime(
+        depthExagFolder.add(params, 'bcuTextureIntensity', 0, 80, 0.5).name('BCU Texture (m)'),
+        () => { applyHorizonPositions(); },
+        () => { applyHorizonPositions(); updateColoring(); buildHorizonBBox(); }
+    );
+
     // Seismic crossline panel controls
     depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
         .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
@@ -5348,8 +5496,36 @@ function addHorizonPanelControls() {
 }
 
 
-// Reset horizon mesh vertex positions to raw + depth exaggeration shift.
+// Sample the BCU texture grid at fractional UV coordinates using bilinear interpolation.
+// u, v are in [0, 1]; maps directly to the full BCU grid (no tiling).
+function sampleBcuTexture(u, v) {
+    if (!bcuTextureData) return 0;
+    const { rows, cols, data, p5, p95 } = bcuTextureData;
+    // Clamp UV coordinates to [0, 1]
+    const cu = Math.max(0, Math.min(1, u));
+    const cv = Math.max(0, Math.min(1, v));
+    // Map to grid coordinates
+    const gx = cu * (cols - 1);
+    const gy = cv * (rows - 1);
+    const ix = Math.floor(gx), iy = Math.floor(gy);
+    const fx = gx - ix, fy = gy - iy;
+    const ix1 = Math.min(ix + 1, cols - 1);
+    const iy1 = Math.min(iy + 1, rows - 1);
+    // Bilinear interpolation
+    const v00 = data[iy][ix],   v10 = data[iy][ix1];
+    const v01 = data[iy1][ix],  v11 = data[iy1][ix1];
+    const val = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                v01 * (1-fx) * fy     + v11 * fx * fy;
+    // Normalise to roughly ±1 using the p5/p95 range
+    const range = (p95 - p5) || 1;
+    return (val - (p5 + p95) * 0.5) / (range * 0.5);
+}
+
+// Reset horizon mesh vertex positions to raw + depth exaggeration shift + BCU texture.
 function applyHorizonPositions() {
+    const bcuIntensity = params.bcuTextureIntensity || 0;
+    const hasBcu = bcuTextureData && bcuIntensity > 0;
+
     allSurveyChildren().forEach(mesh => {
         if (!mesh.userData.isHorizon || !mesh.userData.rawHorizonPos) return;
         if (!(mesh instanceof THREE.Mesh)) return;
@@ -5357,13 +5533,24 @@ function applyHorizonPositions() {
         const raw = mesh.userData.rawHorizonPos;
         const exagShift = mesh.userData.exagShift || 0;
 
+        // BCU texture only applies to Norne survey horizons
+        const isNorne = norneSurveyGroup.children.includes(mesh);
+        const applyBcu = hasBcu && isNorne && !mesh.userData.isContour;
+        const uvAttr = applyBcu ? mesh.geometry.attributes.uv : null;
+
         for (let i = 0; i < pos.count; i++) {
             const rx = raw[i * 3], ry = raw[i * 3 + 1], rz = raw[i * 3 + 2];
             // Keep invalid placeholder vertices at origin (don't shift them)
             if (rx === 0 && ry === 0 && rz === 0) {
                 pos.setXYZ(i, 0, 0, 0);
             } else {
-                pos.setXYZ(i, rx, ry + exagShift, rz);
+                let yOffset = exagShift;
+                if (applyBcu && uvAttr) {
+                    const u = uvAttr.getX(i);
+                    const v = uvAttr.getY(i);
+                    yOffset += sampleBcuTexture(u, v) * bcuIntensity;
+                }
+                pos.setXYZ(i, rx, ry + yOffset, rz);
             }
         }
         pos.needsUpdate = true;
@@ -5881,7 +6068,345 @@ function initPresets() {
 function updatePresetsForDataset() {
     savedPresets['Default'] = getCurrentState();
     updatePresetDropdown('Default');
+    _refreshFlythroughPresetDropdowns();
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  CAMERA FLYTHROUGH ANIMATION ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+// ── Easing functions (t in [0,1] → [0,1]) ──────────────────────────────────
+const _flythroughEasings = {
+    linear:           t => t,
+    easeInQuad:       t => t * t,
+    easeOutQuad:      t => t * (2 - t),
+    easeInOutQuad:    t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t,
+    easeInCubic:      t => t * t * t,
+    easeOutCubic:     t => (--t) * t * t + 1,
+    easeInOutCubic:   t => t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1,
+    easeInQuart:      t => t * t * t * t,
+    easeOutQuart:     t => 1 - (--t) * t * t * t,
+    easeInOutQuart:   t => t < 0.5 ? 8 * t * t * t * t : 1 - 8 * (--t) * t * t * t,
+    easeInQuint:      t => t * t * t * t * t,
+    easeOutQuint:     t => 1 + (--t) * t * t * t * t,
+    easeInOutQuint:   t => t < 0.5 ? 16 * t * t * t * t * t : 1 + 16 * (--t) * t * t * t * t,
+    easeInOutBack:    t => {
+        const c1 = 1.70158, c2 = c1 * 1.525;
+        return t < 0.5
+            ? (Math.pow(2 * t, 2) * ((c2 + 1) * 2 * t - c2)) / 2
+            : (Math.pow(2 * t - 2, 2) * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
+    },
+    easeInOutElastic: t => {
+        const c5 = (2 * Math.PI) / 4.5;
+        if (t === 0 || t === 1) return t;
+        return t < 0.5
+            ? -(Math.pow(2, 20 * t - 10) * Math.sin((20 * t - 11.125) * c5)) / 2
+            :  (Math.pow(2, -20 * t + 10) * Math.sin((20 * t - 11.125) * c5)) / 2 + 1;
+    },
+};
+
+// ── Animation state ─────────────────────────────────────────────────────────
+let _flyAnim = null;  // { startCam, endCam, startTime, durationMs, easingFn, loop, direction }
+
+/**
+ * Start a camera flythrough animation between two camera states.
+ * @param {Object} startCam - { px, py, pz, tx, ty, tz }
+ * @param {Object} endCam   - { px, py, pz, tx, ty, tz }
+ * @param {number} durationSec
+ * @param {string} easingName
+ * @param {boolean} loop - if true, ping-pong between start and end
+ */
+function startCameraFlythrough(startCam, endCam, durationSec, easingName, loop = false) {
+    const easingFn = _flythroughEasings[easingName] || _flythroughEasings.easeInOutCubic;
+    // Snap camera to start position first
+    camera.position.set(startCam.px, startCam.py, startCam.pz);
+    controls.target.set(startCam.tx, startCam.ty, startCam.tz);
+    controls.update();
+
+    // Convert camera positions to spherical coords relative to their targets
+    // for smooth orbital interpolation
+    const startOffset = new THREE.Vector3(
+        startCam.px - startCam.tx,
+        startCam.py - startCam.ty,
+        startCam.pz - startCam.tz
+    );
+    const endOffset = new THREE.Vector3(
+        endCam.px - endCam.tx,
+        endCam.py - endCam.ty,
+        endCam.pz - endCam.tz
+    );
+
+    const startSpherical = new THREE.Spherical().setFromVector3(startOffset);
+    const endSpherical   = new THREE.Spherical().setFromVector3(endOffset);
+
+    _flyAnim = {
+        startCam,
+        endCam,
+        startSpherical,
+        endSpherical,
+        startTime: performance.now(),
+        durationMs: durationSec * 1000,
+        easingFn,
+        loop,
+        direction: 1,  // 1 = forward, -1 = reverse (for ping-pong)
+    };
+
+    // Disable orbit controls during animation to prevent interference
+    controls.enabled = false;
+
+    // Hide all UI for clean screen recording
+    hideAllUI();
+
+    console.log(`🎬 Flythrough started: ${durationSec}s, easing=${easingName}, loop=${loop}`);
+}
+
+function stopCameraFlythrough() {
+    if (!_flyAnim) return;
+    _flyAnim = null;
+    controls.enabled = true;
+
+    // Restore UI
+    showAllUI();
+
+    console.log('🎬 Flythrough stopped');
+}
+
+/**
+ * Called every frame from animate(). Drives the flythrough interpolation.
+ */
+function _tickCameraFlythrough() {
+    if (!_flyAnim) return;
+
+    const { startCam, endCam, startSpherical, endSpherical, startTime, durationMs, easingFn, loop, direction } = _flyAnim;
+    const elapsed = performance.now() - startTime;
+    let rawT = Math.min(elapsed / durationMs, 1.0);
+
+    // Apply direction for ping-pong
+    let t = direction === -1 ? 1 - rawT : rawT;
+    // Apply easing
+    const eased = easingFn(t);
+
+    // Interpolate orbit target (LERP in world space)
+    const tx = startCam.tx + (endCam.tx - startCam.tx) * eased;
+    const ty = startCam.ty + (endCam.ty - startCam.ty) * eased;
+    const tz = startCam.tz + (endCam.tz - startCam.tz) * eased;
+
+    // Interpolate camera position in spherical coordinates for smooth orbital motion
+    const radius = startSpherical.radius + (endSpherical.radius - startSpherical.radius) * eased;
+    const phi    = startSpherical.phi    + (endSpherical.phi    - startSpherical.phi)    * eased;
+
+    // Handle theta wrapping to always take the shortest rotational path
+    let dTheta = endSpherical.theta - startSpherical.theta;
+    if (dTheta > Math.PI)  dTheta -= 2 * Math.PI;
+    if (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+    const theta = startSpherical.theta + dTheta * eased;
+
+    const interpSpherical = new THREE.Spherical(radius, phi, theta);
+    const offset = new THREE.Vector3().setFromSpherical(interpSpherical);
+
+    camera.position.set(tx + offset.x, ty + offset.y, tz + offset.z);
+    controls.target.set(tx, ty, tz);
+    controls.update();
+
+
+
+    // Check completion
+    if (rawT >= 1.0) {
+        if (loop) {
+            // Ping-pong: reverse direction and restart timer
+            _flyAnim.direction = direction * -1;
+            _flyAnim.startTime = performance.now();
+        } else {
+            // Animation complete — snap to end state
+            camera.position.set(endCam.px, endCam.py, endCam.pz);
+            controls.target.set(endCam.tx, endCam.ty, endCam.tz);
+            controls.update();
+            stopCameraFlythrough();
+        }
+    }
+}
+
+// ── ESC key to cancel flythrough ────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _flyAnim) {
+        stopCameraFlythrough();
+    }
+});
+
+// ── Easing curve preview canvas ─────────────────────────────────────────────
+function _drawEasingPreview(easingName) {
+    const container = document.getElementById('flythroughEasingPreview');
+    if (!container) return;
+    const canvas = container.querySelector('canvas');
+    if (!canvas) return;
+
+    // Set canvas size to match container
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width * (window.devicePixelRatio || 1);
+    canvas.height = rect.height * (window.devicePixelRatio || 1);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    const w = rect.width;
+    const h = rect.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const easingFn = _flythroughEasings[easingName] || _flythroughEasings.easeInOutCubic;
+
+    // Draw subtle grid
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.5); ctx.lineTo(w, h * 0.5);
+    ctx.moveTo(w * 0.5, 0); ctx.lineTo(w * 0.5, h);
+    ctx.stroke();
+
+    // Draw diagonal reference (linear)
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(8, h - 8);
+    ctx.lineTo(w - 8, 8);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw easing curve
+    const pad = 8;
+    const plotW = w - pad * 2;
+    const plotH = h - pad * 2;
+    const steps = Math.max(100, Math.round(plotW));
+
+    ctx.strokeStyle = '#42a5f5';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(66, 165, 245, 0.4)';
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const val = easingFn(t);
+        const x = pad + t * plotW;
+        const y = h - pad - val * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Draw endpoints
+    ctx.fillStyle = '#64b5f6';
+    ctx.beginPath(); ctx.arc(pad, h - pad, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w - pad, pad, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+// ── Flythrough preset dropdown population ───────────────────────────────────
+function _refreshFlythroughPresetDropdowns() {
+    const startSel = document.getElementById('flythroughStartPreset');
+    const endSel   = document.getElementById('flythroughEndPreset');
+    if (!startSel || !endSel) return;
+
+    // Build list: presets with camera data + "Current View"
+    const options = [];
+    options.push({ value: '__current__', label: '📍 Current View' });
+    Object.keys(savedPresets).forEach(name => {
+        const p = savedPresets[name];
+        if (p && p.camera) {
+            options.push({ value: name, label: name });
+        }
+    });
+
+    const prevStart = startSel.value;
+    const prevEnd   = endSel.value;
+
+    startSel.innerHTML = '';
+    endSel.innerHTML = '';
+    options.forEach(o => {
+        const opt1 = document.createElement('option');
+        opt1.value = o.value;
+        opt1.textContent = o.label;
+        startSel.appendChild(opt1);
+
+        const opt2 = document.createElement('option');
+        opt2.value = o.value;
+        opt2.textContent = o.label;
+        endSel.appendChild(opt2);
+    });
+
+    // Restore previous selections if still valid
+    if (options.some(o => o.value === prevStart)) startSel.value = prevStart;
+    if (options.some(o => o.value === prevEnd))   endSel.value = prevEnd;
+
+    // Default: start = current view, end = first preset with camera data (if any)
+    if (!prevStart) startSel.value = '__current__';
+    if (!prevEnd && options.length > 1) endSel.value = options[1].value;
+}
+
+function _getCameraFromSelection(value) {
+    if (value === '__current__') {
+        return {
+            px: camera.position.x, py: camera.position.y, pz: camera.position.z,
+            tx: controls.target.x, ty: controls.target.y, tz: controls.target.z
+        };
+    }
+    const preset = savedPresets[value];
+    return preset?.camera || null;
+}
+
+// ── Wire up flythrough UI ───────────────────────────────────────────────────
+let _flythroughUIWired = false;
+function _wireFlythroughUI() {
+    if (_flythroughUIWired) return;
+    _flythroughUIWired = true;
+
+    const btnFlythrough = document.getElementById('btnFlythrough');
+    const easingSelect  = document.getElementById('flythroughEasing');
+
+    // Open modal or stop animation
+    btnFlythrough.addEventListener('click', () => {
+        if (_flyAnim) {
+            stopCameraFlythrough();
+            return;
+        }
+        _refreshFlythroughPresetDropdowns();
+        document.getElementById('flythroughModal').style.display = 'flex';
+        // Draw initial easing preview
+        requestAnimationFrame(() => _drawEasingPreview(easingSelect.value));
+    });
+
+    // Redraw preview when easing changes
+    easingSelect.addEventListener('change', () => {
+        _drawEasingPreview(easingSelect.value);
+    });
+
+    // Play button
+    document.getElementById('confirmFlythrough').addEventListener('click', () => {
+        const startVal = document.getElementById('flythroughStartPreset').value;
+        const endVal   = document.getElementById('flythroughEndPreset').value;
+        const duration = Math.max(0.5, Math.min(60, parseFloat(document.getElementById('flythroughDuration').value) || 3));
+        const easing   = easingSelect.value;
+        const loop     = document.getElementById('flythroughLoop').checked;
+
+        const startCam = _getCameraFromSelection(startVal);
+        const endCam   = _getCameraFromSelection(endVal);
+
+        if (!startCam || !endCam) {
+            return alert('Selected presets do not have saved camera positions.');
+        }
+
+        if (startVal === endVal && startVal !== '__current__') {
+            return alert('Start and end presets are the same. Choose different presets.');
+        }
+
+        closeModal('flythroughModal');
+        startCameraFlythrough(startCam, endCam, duration, easing, loop);
+    });
+}
+
+// Wire once DOM is ready (styles + HTML already appended above)
+_wireFlythroughUI();
 
 // ── Fault colour palettes ────────────────────────────────────────────────────
 const FAULT_PALETTES = {
@@ -7984,7 +8509,19 @@ function updateCompass() {
 // ─────────────────────────────────────────────────────────────
 function animate() {
     requestAnimationFrame(animate);
+
+    // Drive camera flythrough animation if active
+    _tickCameraFlythrough();
+
     controls.update();
+
+    // Dynamic near/far clipping: adjust every frame based on camera distance
+    // to the orbit target so geometry is never clipped when zooming in or out.
+    const dist = camera.position.distanceTo(controls.target);
+    camera.near = Math.max(1, dist * 0.001);
+    camera.far  = Math.max(200000, dist * 100);
+    camera.updateProjectionMatrix();
+
     updateCompass();
     renderer.render(scene, camera);
 }
