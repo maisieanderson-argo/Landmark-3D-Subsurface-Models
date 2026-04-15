@@ -75,11 +75,19 @@ function captureGuiScrollStateForFolder(folder) {
             left: el.scrollLeft,
         });
     };
-    const root = folder?.domElement?.closest?.('.lil-gui') || null;
+    add(document.scrollingElement);
+    const folderEl = folder?.domElement || null;
+    let node = folderEl;
+    while (node instanceof HTMLElement) {
+        add(node);
+        node = node.parentElement;
+    }
+    const root = folderEl?.closest?.('.lil-gui') || null;
     add(root);
     add(root?.querySelector?.(':scope > .children') || null);
-    add(folder?.domElement?.querySelector?.(':scope > .children') || null);
-    add(folder?.domElement?.parentElement || null);
+    if (root?.querySelectorAll) {
+        root.querySelectorAll('.children').forEach(add);
+    }
     return snapshots;
 }
 
@@ -99,9 +107,11 @@ function restoreGuiScrollState(snapshots) {
         apply();
         requestAnimationFrame(() => {
             apply();
-            setTimeout(apply, 0);
         });
     });
+    setTimeout(apply, 0);
+    setTimeout(apply, 40);
+    setTimeout(apply, 120);
 }
 
 // Controls
@@ -1490,6 +1500,7 @@ function promptRenameCustomTarget(targetId) {
 
 function rebuildCustomTargetControllers() {
     if (!customTargetFolder) return;
+    const scrollState = captureGuiScrollStateForFolder(customTargetFolder);
 
     customTargetRowFolders.forEach(folder => folder.destroy());
     customTargetRowFolders = [];
@@ -1576,6 +1587,7 @@ function rebuildCustomTargetControllers() {
         rowFolder.add(rowActions, 'deleteTarget').name('Delete');
         customTargetRowFolders.push(rowFolder);
     });
+    restoreGuiScrollState(scrollState);
 }
 
 function addCustomTargetFromIntersection(intersection) {
@@ -3371,9 +3383,7 @@ function loadCustomSurfaceNetworksFromStorage() {
 
 function rebuildCustomSurfaceNetworkControllers() {
     if (!customSurfaceNetworkFolder) return;
-
-    const guiRoot = customSurfaceNetworkFolder.domElement?.closest?.('.lil-gui') || null;
-    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+    const scrollState = captureGuiScrollStateForFolder(customSurfaceNetworkFolder);
 
     customSurfaceNetworkRowFolders.forEach(folder => folder.destroy());
     customSurfaceNetworkRowFolders = [];
@@ -3671,12 +3681,7 @@ function rebuildCustomSurfaceNetworkControllers() {
         rowFolder.add(actions, 'deleteNetwork').name('Delete');
         customSurfaceNetworkRowFolders.push(rowFolder);
     });
-
-    if (guiRoot) {
-        requestAnimationFrame(() => {
-            guiRoot.scrollTop = prevScrollTop;
-        });
-    }
+    restoreGuiScrollState(scrollState);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -4117,9 +4122,7 @@ function loadCustomTieBackLinesFromStorage() {
 
 function rebuildCustomTieBackLineControllers() {
     if (!customTieBackLineFolder) return;
-
-    const guiRoot = customTieBackLineFolder.domElement?.closest?.('.lil-gui') || null;
-    const prevScrollTop = guiRoot ? guiRoot.scrollTop : 0;
+    const scrollState = captureGuiScrollStateForFolder(customTieBackLineFolder);
 
     customTieBackLineRowFolders.forEach(folder => folder.destroy());
     customTieBackLineRowFolders = [];
@@ -4216,12 +4219,7 @@ function rebuildCustomTieBackLineControllers() {
         rowFolder.add(actions, 'deleteTieBackLine').name('Delete');
         customTieBackLineRowFolders.push(rowFolder);
     });
-
-    if (guiRoot) {
-        requestAnimationFrame(() => {
-            guiRoot.scrollTop = prevScrollTop;
-        });
-    }
+    restoreGuiScrollState(scrollState);
 }
 
 // Add Custom UI Styles and HTML
