@@ -5193,6 +5193,103 @@ let seismicPanel  = null;  // THREE.Mesh textured seismic crossline plane
 let crosslinePane = null;  // THREE.Mesh transparent colored crossline pane
 let _obbState     = null;  // cached OBB geometry params shared by bbox + seismic panel
 
+// ── Text sprite labels for footprint boxes and crossline ─────────────────────
+let norneBBoxLabel   = null;  // Sprite label above Norne footprint box
+let volveBBoxLabel   = null;  // Sprite label above Volve footprint box
+let crosslineLabel   = null;  // Sprite label above crossline panel/pane
+
+/**
+ * Create a billboard text sprite using canvas rendering.
+ * Uses IBM Plex Mono at the given fontSize (default 12px on a 2× canvas).
+ * The sprite always faces the camera and scales with the scene.
+ * @param {string} text       - The label text to render
+ * @param {object} [opts]     - Options
+ * @param {number} [opts.fontSize]  - CSS font size in px (default 12)
+ * @param {string} [opts.color]     - Text fill colour (default '#ffffff')
+ * @param {number} [opts.worldSize] - Target world-unit height for the sprite (default 200)
+ * @returns {THREE.Sprite}
+ */
+let _ibmPlexMonoReady = false;
+// Preload IBM Plex Mono and rebuild labels once it's available
+document.fonts.load("500 24px 'IBM Plex Mono'").then(() => {
+    _ibmPlexMonoReady = true;
+    console.log('IBM Plex Mono font loaded');
+    // Rebuild any existing labels that were created before the font loaded
+    _rebuildAllLabels();
+}).catch(() => {
+    console.warn('IBM Plex Mono font failed to load, using monospace fallback');
+    _ibmPlexMonoReady = true;
+});
+
+function _rebuildAllLabels() {
+    // Rebuild bbox labels (which recreates them with the correct font)
+    if (horizonBBox || volveBBox) {
+        buildHorizonBBox();
+    }
+}
+
+function _renderLabelCanvas(text, fontSize, color) {
+    const dpr = 2;   // high-DPI multiplier for crisp text
+    const canvasFontSize = fontSize * dpr;
+    const fontSpec = `500 ${canvasFontSize}px 'IBM Plex Mono', monospace`;
+
+    // Measure text
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx    = measureCanvas.getContext('2d');
+    measureCtx.font = fontSpec;
+    const metrics  = measureCtx.measureText(text);
+    const textW    = Math.ceil(metrics.width);
+    const paddingX = canvasFontSize;  // horizontal padding
+    const paddingY = Math.ceil(canvasFontSize * 0.5);
+    const canvasW  = textW + paddingX * 2;
+    const canvasH  = canvasFontSize + paddingY * 2;
+
+    // Render text
+    const canvas = document.createElement('canvas');
+    canvas.width  = canvasW;
+    canvas.height = canvasH;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvasW, canvasH);
+    ctx.font = fontSpec;
+    ctx.fillStyle    = color;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvasW / 2, canvasH / 2);
+
+    return { canvas, canvasW, canvasH };
+}
+
+function makeTextSprite(text, opts = {}) {
+    const fontSize  = opts.fontSize  || 12;
+    const color     = opts.color     || '#ffffff';
+    const worldSize = opts.worldSize || 200;
+
+    const { canvas, canvasW, canvasH } = _renderLabelCanvas(text, fontSize, color);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.needsUpdate = true;
+
+    const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: true,
+        depthWrite: false,
+        sizeAttenuation: true,
+    });
+    const sprite = new THREE.Sprite(mat);
+
+    // Scale so sprite height = worldSize, width proportional to canvas aspect
+    const aspect = canvasW / canvasH;
+    sprite.scale.set(worldSize * aspect, worldSize, 1);
+    sprite.userData.isLabel = true;
+    sprite.userData.baseScaleX = worldSize * aspect;
+    sprite.userData.baseScaleY = worldSize;
+
+    return sprite;
+}
+
 // Generic: build an OBB fitted to a single survey group's horizons
 function buildSurveyBBox(surveyGroup) {
     const xzPts = [];
@@ -5271,6 +5368,12 @@ function buildHorizonBBox() {
         horizonBBox.material.dispose();
         horizonBBox = null;
     }
+    if (norneBBoxLabel) {
+        norneSurveyGroup.remove(norneBBoxLabel);
+        norneBBoxLabel.material.map.dispose();
+        norneBBoxLabel.material.dispose();
+        norneBBoxLabel = null;
+    }
     const norneResult = buildSurveyBBox(norneSurveyGroup);
     if (norneResult) {
         horizonBBox = norneResult.bbox;
@@ -5278,6 +5381,18 @@ function buildHorizonBBox() {
         _obbState = norneResult;
         buildSeismicPanel();
         refitNorneUVsToOBB();
+
+        // Label at bottom-left corner of Norne footprint box (top-left anchored)
+        norneBBoxLabel = makeTextSprite('Survey 1', { fontSize: 12, color: '#ffffff', worldSize: 200 });
+        norneBBoxLabel.center.set(0, 1); // anchor at top-left of sprite
+        const bottomY = norneResult.oCtrY - norneResult.boxHeight * 0.5;
+        // Position at corner: offset by -widthA/2 along A-axis + widthB/2 along B-axis
+        const nBx = -norneResult.az, nBz = norneResult.ax; // B-axis perpendicular to A
+        const cornerX = norneResult.oCtrX - (norneResult.widthA * 0.5) * norneResult.ax + (norneResult.widthB * 0.5) * nBx;
+        const cornerZ = norneResult.oCtrZ - (norneResult.widthA * 0.5) * norneResult.az + (norneResult.widthB * 0.5) * nBz;
+        norneBBoxLabel.position.set(cornerX, bottomY, cornerZ);
+        norneBBoxLabel.visible = params.norneBBoxVisible;
+        norneSurveyGroup.add(norneBBoxLabel);
     }
 
     // Volve bbox
@@ -5287,10 +5402,28 @@ function buildHorizonBBox() {
         volveBBox.material.dispose();
         volveBBox = null;
     }
+    if (volveBBoxLabel) {
+        volveSurveyGroup.remove(volveBBoxLabel);
+        volveBBoxLabel.material.map.dispose();
+        volveBBoxLabel.material.dispose();
+        volveBBoxLabel = null;
+    }
     const volveResult = buildSurveyBBox(volveSurveyGroup);
     if (volveResult) {
         volveBBox = volveResult.bbox;
         volveBBox.visible = params.volveBBoxVisible;
+
+        // Label at bottom-left corner of Volve footprint box (top-left anchored)
+        volveBBoxLabel = makeTextSprite('Survey 2', { fontSize: 12, color: '#ffffff', worldSize: 200 });
+        volveBBoxLabel.center.set(0, 1); // anchor at top-left of sprite
+        const vBottomY = volveResult.oCtrY - volveResult.boxHeight * 0.5;
+        // Position at corner: offset by -widthA/2 along A-axis + widthB/2 along B-axis
+        const vBx = -volveResult.az, vBz = volveResult.ax;
+        const vCornerX = volveResult.oCtrX - (volveResult.widthA * 0.5) * volveResult.ax + (volveResult.widthB * 0.5) * vBx;
+        const vCornerZ = volveResult.oCtrZ - (volveResult.widthA * 0.5) * volveResult.az + (volveResult.widthB * 0.5) * vBz;
+        volveBBoxLabel.position.set(vCornerX, vBottomY, vCornerZ);
+        volveBBoxLabel.visible = params.volveBBoxVisible;
+        volveSurveyGroup.add(volveBBoxLabel);
     }
 }
 
@@ -5365,6 +5498,12 @@ function buildSeismicPanel() {
         seismicPanel.material.dispose();
         seismicPanel = null;
     }
+    if (crosslineLabel) {
+        norneSurveyGroup.remove(crosslineLabel);
+        crosslineLabel.material.map.dispose();
+        crosslineLabel.material.dispose();
+        crosslineLabel = null;
+    }
     if (!_obbState) return;
 
     const { oCtrX, oCtrY, oCtrZ, rotY, widthA, widthB, boxHeight, ax, az } = _obbState;
@@ -5410,17 +5549,36 @@ function buildSeismicPanel() {
     crosslinePane.visible = params.crosslinePaneVisible;
     crosslinePane.userData.isSeismicPanel = true;
     norneSurveyGroup.add(crosslinePane);
+
+    // ── Crossline label at top corner of the panel/pane (bottom-left anchored) ──
+    const crosslineVisible = params.seismicPanelVisible || params.crosslinePaneVisible;
+    crosslineLabel = makeTextSprite('Crossline 1', { fontSize: 12, color: '#ffffff', worldSize: 200 });
+    crosslineLabel.center.set(0, 0); // anchor at bottom-left of sprite
+    const topY = oCtrY + boxHeight * 0.5;
+    // Offset to one end of the panel (widthB/2 along B-axis)
+    const cBx = -az, cBz = ax; // B-axis perpendicular to A
+    const clCornerX = eastX + (widthB * 0.5) * cBx;
+    const clCornerZ = eastZ + (widthB * 0.5) * cBz;
+    crosslineLabel.position.set(clCornerX, topY, clCornerZ);
+    crosslineLabel.visible = crosslineVisible;
+    norneSurveyGroup.add(crosslineLabel);
 }
 
 // Reposition both crossline meshes without rebuilding geometry
 function updateCrosslinePosition() {
     if (!_obbState) return;
-    const { oCtrX, oCtrZ, widthA, ax, az } = _obbState;
+    const { oCtrX, oCtrZ, widthA, widthB, ax, az } = _obbState;
     const posT = params.crosslinePosition;
     const px = oCtrX + (widthA * posT) * ax;
     const pz = oCtrZ + (widthA * posT) * az;
     if (seismicPanel)  { seismicPanel.position.x  = px; seismicPanel.position.z  = pz; }
     if (crosslinePane) { crosslinePane.position.x = px; crosslinePane.position.z = pz; }
+    if (crosslineLabel) {
+        // Corner offset: +widthB/2 along B-axis
+        const bx = -az, bz = ax;
+        crosslineLabel.position.x = px + (widthB * 0.5) * bx;
+        crosslineLabel.position.z = pz + (widthB * 0.5) * bz;
+    }
 }
 
 
@@ -5482,7 +5640,7 @@ function addHorizonPanelControls() {
 
     // Seismic crossline panel controls
     depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
-        .onChange(v => { if (seismicPanel) seismicPanel.visible = v; });
+        .onChange(v => { if (seismicPanel) seismicPanel.visible = v; if (crosslineLabel) crosslineLabel.visible = v || params.crosslinePaneVisible; });
     depthExagFolder.add(params, 'seismicPanelOpacity', 0.0, 1.0, 0.01).name('Panel Opacity')
         .onChange(v => { if (seismicPanel) { seismicPanel.material.opacity = v; seismicPanel.material.needsUpdate = true; } });
     depthExagFolder.add(params, 'crosslinePosition', -0.5, 0.5, 0.01).name('Crossline Position')
@@ -5490,7 +5648,7 @@ function addHorizonPanelControls() {
 
     // Crossline transparent pane controls
     depthExagFolder.add(params, 'crosslinePaneVisible').name('Crossline Pane')
-        .onChange(v => { if (crosslinePane) crosslinePane.visible = v; });
+        .onChange(v => { if (crosslinePane) crosslinePane.visible = v; if (crosslineLabel) crosslineLabel.visible = v || params.seismicPanelVisible; });
     depthExagFolder.add(params, 'crosslinePaneOpacity', 0.0, 1.0, 0.01).name('Pane Opacity')
         .onChange(v => { if (crosslinePane) { crosslinePane.material.opacity = v; crosslinePane.material.needsUpdate = true; } });
     depthExagFolder.addColor(params, 'crosslinePaneColor').name('Pane Color')
@@ -5912,10 +6070,12 @@ function applyState(state) {
         horizonBBox.visible = params.norneBBoxVisible;
         horizonBBox.material.color.set(params.horizonBBoxColor);
     }
+    if (norneBBoxLabel) norneBBoxLabel.visible = params.norneBBoxVisible;
     if (volveBBox) {
         volveBBox.visible = params.volveBBoxVisible;
         volveBBox.material.color.set(params.horizonBBoxColor);
     }
+    if (volveBBoxLabel) volveBBoxLabel.visible = params.volveBBoxVisible;
     // Fault smoothing
     applyFaultSmoothing(params.faultSmoothIterations);
     // Fault palette
@@ -5950,6 +6110,7 @@ function applyState(state) {
         crosslinePane.material.color.set(params.crosslinePaneColor);
         crosslinePane.material.needsUpdate = true;
     }
+    if (crosslineLabel) crosslineLabel.visible = params.seismicPanelVisible || params.crosslinePaneVisible;
 
     // Survey group positions (Norne + Volve)
     if (typeof applyNorneSurveyOffset === 'function') applyNorneSurveyOffset();
@@ -7593,7 +7754,7 @@ nornePosFolder.add(params, 'norneScale', 0.1, 5, 0.1).name('Scale').onChange(app
 nornePosFolder.add(params, 'norneDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyNorneSurveyOffset);
 applyNorneSurveyOffset();
 nornePosFolder.add(params, 'norneBBoxVisible').name('Footprint Box')
-    .onChange(v => { if (horizonBBox) horizonBBox.visible = v; });
+    .onChange(v => { if (horizonBBox) horizonBBox.visible = v; if (norneBBoxLabel) norneBBoxLabel.visible = v; });
 nornePosFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
     .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); if (volveBBox) volveBBox.material.color.set(v); });
 
@@ -7618,7 +7779,7 @@ volvePosFolder.add(params, 'volveScale', 0.1, 5, 0.1).name('Scale').onChange(app
 volvePosFolder.add(params, 'volveDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyVolveSurveyOffset);
 applyVolveSurveyOffset();
 volvePosFolder.add(params, 'volveBBoxVisible').name('Footprint Box')
-    .onChange(v => { if (volveBBox) volveBBox.visible = v; });
+    .onChange(v => { if (volveBBox) volveBBox.visible = v; if (volveBBoxLabel) volveBBoxLabel.visible = v; });
 
 // ── Wells — top-level panel section ─────────────────────────────────────────
 const wellFolder = gui.addFolder('Wells');
@@ -8525,7 +8686,59 @@ function animate() {
     camera.updateProjectionMatrix();
 
     updateCompass();
+    updateLabelOpacity();
     renderer.render(scene, camera);
+}
+
+// ── Distance-based label opacity fading ─────────────────────────────────────
+// Computes the projected screen-space height of each label sprite.
+// When the label is smaller than a threshold, it fades smoothly to fully
+// transparent so zoomed-out views aren't cluttered with tiny labels.
+const _labelFadeMinPx = 4;    // below this pixel height → fully invisible
+const _labelFadeMaxPx = 10;   // above this pixel height → fully opaque
+
+function _getScreenHeight(sprite) {
+    // Get world-space position of the sprite
+    const worldPos = new THREE.Vector3();
+    sprite.getWorldPosition(worldPos);
+
+    // Distance from camera
+    const camDist = camera.position.distanceTo(worldPos);
+    if (camDist < 1) return 1000; // effectively infinite screen size
+
+    // Projected height: worldHeight / distance * screen projection factor
+    const worldHeight = sprite.scale.y;
+    const vFov = camera.fov * Math.PI / 180;
+    const screenH = window.innerHeight;
+    const projectedPx = (worldHeight / (2 * camDist * Math.tan(vFov / 2))) * screenH;
+
+    return projectedPx;
+}
+
+function updateLabelOpacity() {
+    const labels = [norneBBoxLabel, volveBBoxLabel, crosslineLabel];
+    for (const label of labels) {
+        if (!label || !label.visible) continue;
+
+        // Compensate non-uniform Y scaling from parent groups
+        // modelGroup.scale.y = zScale, surveyGroup.scale = uniform
+        // Sprite needs inverse Y compensation to appear un-stretched
+        const parentScaleY = (params.zScale || 1);
+        const bsx = label.userData.baseScaleX;
+        const bsy = label.userData.baseScaleY;
+        label.scale.set(bsx, bsy / parentScaleY, 1);
+
+        const px = _getScreenHeight(label);
+        let opacity;
+        if (px >= _labelFadeMaxPx) {
+            opacity = 1.0;
+        } else if (px <= _labelFadeMinPx) {
+            opacity = 0.0;
+        } else {
+            opacity = (px - _labelFadeMinPx) / (_labelFadeMaxPx - _labelFadeMinPx);
+        }
+        label.material.opacity = opacity;
+    }
 }
 
 window.addEventListener('resize', () => {
