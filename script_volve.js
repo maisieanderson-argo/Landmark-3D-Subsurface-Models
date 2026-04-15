@@ -8331,6 +8331,7 @@ async function initNorneData() {
         mesh.userData.centerX = centerX;
         mesh.userData.centerY = centerY;
         mesh.userData.rawHorizonPos = Float32Array.from(geometry.attributes.position.array);
+        mesh.userData.survey = 'norne';
         norneSurveyGroup.add(mesh);
 
 
@@ -8340,6 +8341,7 @@ async function initNorneData() {
         cMesh.renderOrder = 1;
         cMesh.userData.isContour = true;
         cMesh.userData.layerName = h.name;
+        cMesh.userData.survey = 'norne';
         norneSurveyGroup.add(cMesh);
     });
 
