@@ -241,6 +241,21 @@ const TEXTURE_ASSIGNMENTS = [
     { survey: 'volve', layerName: 'Hugin Fm Base', imageIndex: 3 },
 ];
 
+const SPECD2_ASSIGNMENTS = [
+    // Norne mapping
+    { survey: 'norne', layerName: 'Åre Fm Top', file: 'SpecD2_1.png' },
+    { survey: 'norne', layerName: 'Tilje Fm Top', file: 'SpecD2_2.png' },
+    { survey: 'norne', layerName: 'Ile Fm Top', file: 'SpecD2_3.png' },
+    { survey: 'norne', layerName: 'Tofte Fm Top', file: 'SpecD2_4.png' },
+    { survey: 'norne', layerName: 'Garn Fm Top', file: 'SpecD2_5.png' },
+    { survey: 'norne', layerName: 'Not Fm Top', file: 'SpecD2_6.png' },
+    { survey: 'norne', layerName: 'Norne Base', file: 'SpecD2_7.png' },
+    // Volve mapping
+    { survey: 'volve', layerName: 'BCU (Base Cretaceous Unconformity)', file: 'SpecD2_3.png' },
+    { survey: 'volve', layerName: 'Hugin Fm Top', file: 'SpecD2_1.png' },
+    { survey: 'volve', layerName: 'Hugin Fm Base', file: 'SpecD2_2.png' },
+];
+
 function getTextureKey(survey, layerName) {
     return `${survey}:${layerName}`;
 }
@@ -252,6 +267,7 @@ function getMeshTextureKey(mesh) {
 // Load per-layer SEM Map textures (SEM-Map-1.png through SEM-Map-7.png)
 const semMapTextures = {};   // survey:layerName → THREE.Texture
 const specDTextures = {};    // survey:layerName → THREE.Texture
+const specD2Textures = {};   // survey:layerName → THREE.Texture
 const loader = new THREE.TextureLoader();
 TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
     const key = getTextureKey(survey, layerName);
@@ -263,6 +279,12 @@ TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
     const specTex = loader.load(`SpecD${idx}.png`);
     specTex.colorSpace = THREE.SRGBColorSpace;
     specDTextures[key] = specTex;
+});
+SPECD2_ASSIGNMENTS.forEach(({ survey, layerName, file }) => {
+    const key = getTextureKey(survey, layerName);
+    const spec2Tex = loader.load(file);
+    spec2Tex.colorSpace = THREE.SRGBColorSpace;
+    specD2Textures[key] = spec2Tex;
 });
 // Backward-compat alias used by the clear-texture sweep
 const semMapTexture = semMapTextures[getTextureKey('norne', 'Åre Fm Top')];
@@ -286,6 +308,7 @@ fetch('volve_bcu_texture.json')
 // ── Per-layer offscreen canvases for pixel sampling (used by dots mode) ──
 const semMapCanvases = {};   // survey:layerName → { canvas, ctx }
 const specDCanvases = {};    // survey:layerName → { canvas, ctx }
+const specD2Canvases = {};   // survey:layerName → { canvas, ctx }
 
 function _loadCanvasForLayer(src, targetMap, survey, layerName) {
     const img = new Image();
@@ -300,7 +323,8 @@ function _loadCanvasForLayer(src, targetMap, survey, layerName) {
         // Rebuild dots if already showing the relevant texture mode
         const isSem  = params.selectedColormap === 'SEM Map';
         const isSpec = params.selectedColormap === 'Spec-D';
-        if ((isSem || isSpec) && params.showHorizonDots) {
+        const isSpec2 = params.selectedColormap === 'Spec-D 2 (B&W)';
+        if ((isSem || isSpec || isSpec2) && params.showHorizonDots) {
             const hasDots = allSurveyChildren().some(c => c.userData.isHorizonDots);
             if (hasDots) rebuildHorizonDots();
         }
@@ -312,6 +336,9 @@ TEXTURE_ASSIGNMENTS.forEach(({ survey, layerName, imageIndex }) => {
     const idx = imageIndex;
     _loadCanvasForLayer(`SEM-Map-${idx}.png`, semMapCanvases, survey, layerName);
     _loadCanvasForLayer(`SpecD${idx}.png`, specDCanvases, survey, layerName);
+});
+SPECD2_ASSIGNMENTS.forEach(({ survey, layerName, file }) => {
+    _loadCanvasForLayer(file, specD2Canvases, survey, layerName);
 });
 
 // Colormap Definitions (Control Points 0..1)
@@ -5024,6 +5051,7 @@ const _paramsDefaults = {
     norneBBoxVisible: false,
     volveBBoxVisible: false,
     horizonBBoxColor: '#ffffff',
+    showLabels: true,
     // ── Per-horizon depth exaggeration ───────────────────────────────────────
     horizonDepthExag: 1.95,
     // Seismic crossline panel
@@ -5195,6 +5223,19 @@ let _obbState     = null;  // cached OBB geometry params shared by bbox + seismi
 let norneBBoxLabel   = null;  // Sprite label above Norne footprint box
 let volveBBoxLabel   = null;  // Sprite label above Volve footprint box
 let crosslineLabel   = null;  // Sprite label above crossline panel/pane
+
+function updateSurveyAndCrosslineLabelVisibility() {
+    const showLabels = params.showLabels !== false;
+    if (norneBBoxLabel) {
+        norneBBoxLabel.visible = showLabels && !!params.norneBBoxVisible;
+    }
+    if (volveBBoxLabel) {
+        volveBBoxLabel.visible = showLabels && !!params.volveBBoxVisible;
+    }
+    if (crosslineLabel) {
+        crosslineLabel.visible = showLabels && (!!params.seismicPanelVisible || !!params.crosslinePaneVisible);
+    }
+}
 
 /**
  * Create a billboard text sprite using canvas rendering.
@@ -5389,7 +5430,6 @@ function buildHorizonBBox() {
         const cornerX = norneResult.oCtrX - (norneResult.widthA * 0.5) * norneResult.ax + (norneResult.widthB * 0.5) * nBx;
         const cornerZ = norneResult.oCtrZ - (norneResult.widthA * 0.5) * norneResult.az + (norneResult.widthB * 0.5) * nBz;
         norneBBoxLabel.position.set(cornerX, bottomY, cornerZ);
-        norneBBoxLabel.visible = params.norneBBoxVisible;
         norneSurveyGroup.add(norneBBoxLabel);
     }
 
@@ -5420,9 +5460,9 @@ function buildHorizonBBox() {
         const vCornerX = volveResult.oCtrX - (volveResult.widthA * 0.5) * volveResult.ax + (volveResult.widthB * 0.5) * vBx;
         const vCornerZ = volveResult.oCtrZ - (volveResult.widthA * 0.5) * volveResult.az + (volveResult.widthB * 0.5) * vBz;
         volveBBoxLabel.position.set(vCornerX, vBottomY, vCornerZ);
-        volveBBoxLabel.visible = params.volveBBoxVisible;
         volveSurveyGroup.add(volveBBoxLabel);
     }
+    updateSurveyAndCrosslineLabelVisibility();
 }
 
 // ── Refit Norne horizon UVs to OBB ──────────────────────────────────────────
@@ -5549,7 +5589,6 @@ function buildSeismicPanel() {
     norneSurveyGroup.add(crosslinePane);
 
     // ── Crossline label at top corner of the panel/pane (bottom-left anchored) ──
-    const crosslineVisible = params.seismicPanelVisible || params.crosslinePaneVisible;
     crosslineLabel = makeTextSprite('Crossline 1', { fontSize: 12, color: '#ffffff', worldSize: 200 });
     crosslineLabel.center.set(0, 0); // anchor at bottom-left of sprite
     const topY = oCtrY + boxHeight * 0.5;
@@ -5558,8 +5597,8 @@ function buildSeismicPanel() {
     const clCornerX = eastX + (widthB * 0.5) * cBx;
     const clCornerZ = eastZ + (widthB * 0.5) * cBz;
     crosslineLabel.position.set(clCornerX, topY, clCornerZ);
-    crosslineLabel.visible = crosslineVisible;
     norneSurveyGroup.add(crosslineLabel);
+    updateSurveyAndCrosslineLabelVisibility();
 }
 
 // Reposition both crossline meshes without rebuilding geometry
@@ -5638,7 +5677,7 @@ function addHorizonPanelControls() {
 
     // Seismic crossline panel controls
     depthExagFolder.add(params, 'seismicPanelVisible').name('Crossline Panel')
-        .onChange(v => { if (seismicPanel) seismicPanel.visible = v; if (crosslineLabel) crosslineLabel.visible = v || params.crosslinePaneVisible; });
+        .onChange(v => { if (seismicPanel) seismicPanel.visible = v; updateSurveyAndCrosslineLabelVisibility(); });
     depthExagFolder.add(params, 'seismicPanelOpacity', 0.0, 1.0, 0.01).name('Panel Opacity')
         .onChange(v => { if (seismicPanel) { seismicPanel.material.opacity = v; seismicPanel.material.needsUpdate = true; } });
     depthExagFolder.add(params, 'crosslinePosition', -0.5, 0.5, 0.01).name('Crossline Position')
@@ -5646,7 +5685,7 @@ function addHorizonPanelControls() {
 
     // Crossline transparent pane controls
     depthExagFolder.add(params, 'crosslinePaneVisible').name('Crossline Pane')
-        .onChange(v => { if (crosslinePane) crosslinePane.visible = v; if (crosslineLabel) crosslineLabel.visible = v || params.seismicPanelVisible; });
+        .onChange(v => { if (crosslinePane) crosslinePane.visible = v; updateSurveyAndCrosslineLabelVisibility(); });
     depthExagFolder.add(params, 'crosslinePaneOpacity', 0.0, 1.0, 0.01).name('Pane Opacity')
         .onChange(v => { if (crosslinePane) { crosslinePane.material.opacity = v; crosslinePane.material.needsUpdate = true; } });
     depthExagFolder.addColor(params, 'crosslinePaneColor').name('Pane Color')
@@ -6068,12 +6107,10 @@ function applyState(state) {
         horizonBBox.visible = params.norneBBoxVisible;
         horizonBBox.material.color.set(params.horizonBBoxColor);
     }
-    if (norneBBoxLabel) norneBBoxLabel.visible = params.norneBBoxVisible;
     if (volveBBox) {
         volveBBox.visible = params.volveBBoxVisible;
         volveBBox.material.color.set(params.horizonBBoxColor);
     }
-    if (volveBBoxLabel) volveBBoxLabel.visible = params.volveBBoxVisible;
     // Fault smoothing
     applyFaultSmoothing(params.faultSmoothIterations);
     // Fault palette
@@ -6108,7 +6145,7 @@ function applyState(state) {
         crosslinePane.material.color.set(params.crosslinePaneColor);
         crosslinePane.material.needsUpdate = true;
     }
-    if (crosslineLabel) crosslineLabel.visible = params.seismicPanelVisible || params.crosslinePaneVisible;
+    updateSurveyAndCrosslineLabelVisibility();
 
     // Survey group positions (Norne + Volve)
     if (typeof applyNorneSurveyOffset === 'function') applyNorneSurveyOffset();
@@ -7063,7 +7100,8 @@ function updateColoring() {
 
     const usingSemMap  = params.selectedColormap === 'SEM Map';
     const usingSpecD   = params.selectedColormap === 'Spec-D';
-    const usingTexture = usingSemMap || usingSpecD;
+    const usingSpecD2  = params.selectedColormap === 'Spec-D 2 (B&W)';
+    const usingTexture = usingSemMap || usingSpecD || usingSpecD2;
 
     // ── First, clear any per-layer texture from ALL meshes (in case we're switching away) ──
     allSurveyChildren().forEach(mesh => {
@@ -7072,7 +7110,8 @@ function updateColoring() {
             // Only clear textures we manage (SEM or SpecD)
             const textureKey = getMeshTextureKey(mesh);
             if (semMapTextures[textureKey] === mesh.material.map ||
-                specDTextures[textureKey] === mesh.material.map) {
+                specDTextures[textureKey] === mesh.material.map ||
+                specD2Textures[textureKey] === mesh.material.map) {
                 mesh.material.map = null;
                 mesh.material.needsUpdate = true;
             }
@@ -7081,7 +7120,7 @@ function updateColoring() {
 
     if (usingTexture && params.colorByDepth) {
         // ── Texture mode: apply per-layer texture to any mapped survey horizon, depth-colour the rest ──
-        const texMap = usingSpecD ? specDTextures : semMapTextures;
+        const texMap = usingSpecD ? specDTextures : usingSpecD2 ? specD2Textures : semMapTextures;
 
         // Apply per-layer texture to mapped horizon meshes
         allSurveyChildren().forEach(mesh => {
@@ -7285,9 +7324,10 @@ function rebuildHorizonDots() {
         // Colour dots — per-layer texture sampling for mapped survey meshes, or vertex colors for depth
         const isSemDots  = params.selectedColormap === 'SEM Map';
         const isSpecDots = params.selectedColormap === 'Spec-D';
-        const canvasMap = isSemDots ? semMapCanvases : isSpecDots ? specDCanvases : null;
+        const isSpec2Dots = params.selectedColormap === 'Spec-D 2 (B&W)';
+        const canvasMap = isSemDots ? semMapCanvases : isSpecDots ? specDCanvases : isSpec2Dots ? specD2Canvases : null;
         const layerCanvas = canvasMap ? canvasMap[getMeshTextureKey(mesh)] : null;
-        const useTextureDots = (isSemDots || isSpecDots)
+        const useTextureDots = (isSemDots || isSpecDots || isSpec2Dots)
             && params.colorByDepth
             && layerCanvas;
 
@@ -7444,12 +7484,13 @@ function rebuild3DDots() {
             // Otherwise: use original horizon material color
             const isSem  = params.selectedColormap === 'SEM Map';
             const isSpec = params.selectedColormap === 'Spec-D';
-            const canvasMap = isSem ? semMapCanvases : isSpec ? specDCanvases : null;
+            const isSpec2 = params.selectedColormap === 'Spec-D 2 (B&W)';
+            const canvasMap = isSem ? semMapCanvases : isSpec ? specDCanvases : isSpec2 ? specD2Canvases : null;
 
             const upperCanvas  = canvasMap ? canvasMap[getMeshTextureKey(upper)] : null;
             const lowerCanvas  = canvasMap ? canvasMap[getMeshTextureKey(lower)] : null;
-            const useUpperTex  = (isSem || isSpec) && params.colorByDepth && upperCanvas;
-            const useLowerTex  = (isSem || isSpec) && params.colorByDepth && lowerCanvas;
+            const useUpperTex  = (isSem || isSpec || isSpec2) && params.colorByDepth && upperCanvas;
+            const useLowerTex  = (isSem || isSpec || isSpec2) && params.colorByDepth && lowerCanvas;
 
             const upperHasColors = upper.geometry.attributes.color;
             const lowerHasColors = lower.geometry.attributes.color;
@@ -7643,6 +7684,9 @@ vizFolder.add(params, 'flatShading').name('Sharp/Flat').onChange((v) => {
         }
     });
 });
+vizFolder.add(params, 'showLabels').name('Show Labels').onChange(() => {
+    updateSurveyAndCrosslineLabelVisibility();
+});
 
 const depthFolder = vizFolder.addFolder('Depth Coloring');
 _trackFolder(depthFolder, 'Depth Coloring');
@@ -7653,7 +7697,7 @@ depthFolder.add(params, 'depthColorPerLayer').name('Per-Layer Gradient').onChang
     if (params.colorByDepth) updateColoring();
 });
 
-depthFolder.add(params, 'selectedColormap', [...Object.keys(ColormapRegistry), 'SEM Map', 'Spec-D']).name('Colormap').onChange(() => {
+depthFolder.add(params, 'selectedColormap', [...Object.keys(ColormapRegistry), 'SEM Map', 'Spec-D', 'Spec-D 2 (B&W)']).name('Colormap').onChange(() => {
     if (params.colorByDepth) updateColoring();
 });
 
@@ -7752,7 +7796,7 @@ nornePosFolder.add(params, 'norneScale', 0.1, 5, 0.1).name('Scale').onChange(app
 nornePosFolder.add(params, 'norneDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyNorneSurveyOffset);
 applyNorneSurveyOffset();
 nornePosFolder.add(params, 'norneBBoxVisible').name('Footprint Box')
-    .onChange(v => { if (horizonBBox) horizonBBox.visible = v; if (norneBBoxLabel) norneBBoxLabel.visible = v; });
+    .onChange(v => { if (horizonBBox) horizonBBox.visible = v; updateSurveyAndCrosslineLabelVisibility(); });
 nornePosFolder.addColor(params, 'horizonBBoxColor').name('Box Color')
     .onChange(v => { if (horizonBBox) horizonBBox.material.color.set(v); if (volveBBox) volveBBox.material.color.set(v); });
 
@@ -7777,7 +7821,7 @@ volvePosFolder.add(params, 'volveScale', 0.1, 5, 0.1).name('Scale').onChange(app
 volvePosFolder.add(params, 'volveDepthOffsetM', -3000, 3000, 10).name('Depth Offset (m)').onChange(applyVolveSurveyOffset);
 applyVolveSurveyOffset();
 volvePosFolder.add(params, 'volveBBoxVisible').name('Footprint Box')
-    .onChange(v => { if (volveBBox) volveBBox.visible = v; if (volveBBoxLabel) volveBBoxLabel.visible = v; });
+    .onChange(v => { if (volveBBox) volveBBox.visible = v; updateSurveyAndCrosslineLabelVisibility(); });
 
 // ── Wells — top-level panel section ─────────────────────────────────────────
 const wellFolder = gui.addFolder('Wells');
